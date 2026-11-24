@@ -1,0 +1,14 @@
+{
+  "picture": "identity.png",
+  "prompt_file": "prompt_replace_performer.txt",
+  "clips": [
+    {"name": "closeup_short", "video": "closeup.mp4", "category": "closeup", "width": 416, "height": 736, "frames": 107, "start": 0.0},
+    {"name": "wide_short", "video": "wide.mp4", "category": "wide", "width": 736, "height": 416, "frames": 107, "start": 0.0},
+    {"name": "closeup_long", "video": "closeup.mp4", "category": "closeup_long", "width": 416, "height": 736, "frames": 243, "start": 0.0}
+  ],
+  "variants": {
+    "tara": {"strength": 2.0},
+    "nobias": {"strength": 0.0}
+  },
+  "seeds": [42, 7]
+}

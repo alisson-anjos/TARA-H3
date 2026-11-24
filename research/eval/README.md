@@ -1,0 +1,15 @@
+# TARA-H3 evaluation
+
+Reproducible version of the measurements in the technical report (Sections 4.4–4.6).
+
+1. Put the reference videos and the identity picture in ComfyUI's `input/` folder and start ComfyUI with TARA-H3 installed.
+2. Write a manifest like [`clips.example.json`](clips.example.json): clips (category, size, 17n+5 frame count, start time), variants (any `TARAH3TemporalAlignment` inputs, plus `tara_lora_strength`, `reference_width`, `reference_height`) and seeds. Model file names can be overridden under `"models"`.
+3. Render, measure, summarize:
+
+```bash
+python research/eval/run_eval.py my_clips.json --url http://127.0.0.1:8188 --output-dir ComfyUI/output
+python research/eval/metrics.py my_clips.json ComfyUI/input ComfyUI/output --out metrics.csv   # needs insightface + opencv
+python research/eval/summarize.py metrics.csv > results.md
+```
+
+`metrics.py` reports, per render: timing correlation with the reference video (head yaw/pitch/roll, mouth opening, optical-flow magnitude; best lag within ±8 frames) and ArcFace identity per third of the clip, against the target picture (`pic_*`) and the reference-video person (`ref_*`). Timing alone rewards copying the reference, so read it together with identity; `collapse` marks renders whose last third looks more like the reference person than the picture.

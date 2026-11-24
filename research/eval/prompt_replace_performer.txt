@@ -1,0 +1,13 @@
+motion_transfer:
+subject_definitions:
+<Subject 1> is the subject in <Picture 1>; preserve its visible identity, face, hair or fur, body proportions and outfit. Picture roles are defined by this prompt, not by slot number. Additional connected pictures may specify other subjects, outfits, objects, environments or style; edit these sections to assign each actual attached picture explicitly.
+summary:
+[video generation + reference] Transfer the source performance to <Subject 1>, preserving the action order, timing and camera of the guide.
+retention_analysis:
+<Subject 1>: preserve the reference identity and appearance throughout the clip. Keep the guide setting unless a connected reference is explicitly assigned to replace it.
+detailed_description:
+[Shot 1] <Subject 1> follows the guide's motion, poses, gestures, head movement and expression in order and at matching times. Keep identity stable during occlusion, turns and back views. Do not turn a back view into a front view. Several reference images may describe one subject; image count does not imply performer count. Do not copy an identity reference's still pose or backdrop as the motion or setting.
+overall_soundscape:
+Keep the source soundtrack when connected; do not invent dialogue.
+non_diegetic_music:
+No additional music requested.
