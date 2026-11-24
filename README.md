@@ -11,12 +11,6 @@ It adds no learned layers. Use it with a LoRA trained with the same policy; see 
 
 The full method, equations, numerical checks and limitations are in the technical report: [research/README.md](research/README.md).
 
-## Example
-
-![10 s clip: reference video, no temporal bias, TARA](docs/media/tara_long_closeup_seed42.gif)
-
-10 s clip, same seed. Without the temporal bias the output turns into the person of the reference video in the last third; with TARA the identity from the picture is kept (late in this clip, beyond the 4.5 s training length, the output turns away from the reference pose). Full videos: [long close-up](docs/media/tara_long_closeup_seed42.mp4), [long two-person](docs/media/tara_long_two_people_seed11.mp4). Results over 15 clips × 3 seeds: [research/README.md §4.7](research/README.md).
-
 ## Nodes
 
 | Node | What it does |
@@ -78,8 +72,8 @@ Without the TARA LoRA, the base Ref2VA model reproduces the reference video's co
 ## Recommendations from the measurements
 
 - **Reference resolution matters more than output resolution.** The LoRA was trained with 672x384 reference videos (252 tokens per latent frame). At 720p with a 704x1280 reference, strength 2 lost the reference timing on some seeds; a 416x736 reference with a 720p output, or strength 0.5–1.0, tracked it without leaking the reference person's appearance. `strength_scale = auto` lowers the strength for dense references (2 → 1.07 at 704x1280); it is opt-in until evaluated on more clips.
-- **Evaluation v1 (15 clips × 3 seeds, [research/eval/results](research/eval/results/)):** on short clips the bias changes neither timing nor identity; on 10 s clips it keeps identity stable (long close-up, last third: 0.69 ± 0.03 vs 0.47 ± 0.35 without the bias, which collapsed into the reference person in 1 of 3 seeds; long two-person: 0.52 vs 0.34) with equal or better timing.
-- **Long clips are where the bias matters most.** On a 10 s close-up (243 frames), the run without the bias drifted into copying the reference person in the last third (ArcFace to the picture 0.07, to the reference person 0.66); with TARA identity held (0.67 / 0.08). On short or wide shots both followed timing similarly. Beyond the 4.5 s training length the output can still wander from the reference scene, so prefer clips close to the training length or windowed generation.
+- **Evaluation v1 (15 clips × 3 seeds) is inconclusive.** On short clips the bias changed neither timing nor identity. On 10 s clips (2.3× the training length) both settings fail, differently: without the bias the output can turn into the reference person; with TARA it can leave the reference performance, and in a two-person clip it replaced both people. Our identity metric (largest face vs. the picture) scored that duplication as success, so it is not reported as evidence. See [research/README.md §4.7](research/README.md).
+- **Stay close to the training length (4.5 s).** Beyond it, outputs drift from the reference with or without the bias; use clips of about that length or windowed generation.
 - `sigma >= 0.90` is a good speed preset at the training resolution, but not for dense references.
 
 ## Install
