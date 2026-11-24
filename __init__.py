@@ -1,0 +1,9 @@
+"""TARA-H3: Temporally Aligned Reference Attention for MiniMax H3 in ComfyUI."""
+from .tara_h3.minimax_h3_native_temporal import NODE_CLASS_MAPPINGS as _TEMPORAL, NODE_DISPLAY_NAME_MAPPINGS as _TEMPORAL_NAMES
+from .tara_h3.minimax_h3_reference_binding import NODE_CLASS_MAPPINGS as _BINDING, NODE_DISPLAY_NAME_MAPPINGS as _BINDING_NAMES
+from .tara_h3.minimax_h3_token_weights import NODE_CLASS_MAPPINGS as _TOKENS, NODE_DISPLAY_NAME_MAPPINGS as _TOKENS_NAMES
+
+NODE_CLASS_MAPPINGS = {**_TEMPORAL, **_BINDING, **_TOKENS}
+NODE_DISPLAY_NAME_MAPPINGS = {**_TEMPORAL_NAMES, **_BINDING_NAMES, **_TOKENS_NAMES}
+WEB_DIRECTORY = "./web/js"
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

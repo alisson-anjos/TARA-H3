@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install CPU PyTorch and pytest
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install pytest
+      - name: Unit tests
+        run: python -m pytest -q tests
+
+  fused-kernel:
+    # Ahead-of-time compiles the sage fused Triton kernel for every supported GPU architecture; no GPU needed.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Triton
+        run: pip install triton
+      - name: Compile for sm80 sm86 sm89 sm90 sm100 sm120
+        run: python tools/compile_fused_kernel.py 80 86 89 90 100 120
+
+  kitchen-binaries:
+    # The optional one-pass Kitchen/Sol CUDA extension is built and released by
+    # alisson-anjos/comfy-kitchen (branch feat/h3-native-temporal). Verify that every
+    # binary pinned in the manifest exists in that release with the pinned SHA-256.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python tools/verify_kitchen_manifest.py

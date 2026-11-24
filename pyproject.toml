@@ -1,0 +1,17 @@
+[project]
+name = "tara-h3"
+description = "TARA-H3: Temporally Aligned Reference Attention for MiniMax H3 in ComfyUI. Aligns a native reference video with the generated video in time (shared RoPE clock + bounded temporal attention bias), with fast exact attention backends."
+version = "0.2.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["sageattention", "triton"]
+
+[project.urls]
+Repository = "https://github.com/alisson-anjos/TARA-H3"
+
+[tool.comfy]
+PublisherId = "alisson-anjos"
+DisplayName = "TARA-H3"

@@ -1,0 +1,11 @@
+TARA-H3
+Copyright (c) 2026 Alisson Anjos. Licensed under GPL-3.0 (see LICENSE).
+
+tara_h3/minimax_h3_temporal_triton.py is derived from SageAttention
+(https://github.com/thu-ml/SageAttention, triton/attn_qk_int8_per_block.py),
+Copyright (c) 2024 by SageAttention team, licensed under the Apache License 2.0.
+It reuses SageAttention's per-block INT8 quantization at runtime.
+
+The optional one-pass Kitchen/Sol extension is downloaded on first use from
+https://github.com/alisson-anjos/comfy-kitchen (verified release bytes); its own
+LICENSE and NOTICE are downloaded alongside it.
