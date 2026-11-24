@@ -29,8 +29,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Triton
-        run: pip install triton
+      - name: Install CPU PyTorch and Triton
+        run: |
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install triton
       - name: Compile for sm80 sm86 sm89 sm90 sm100 sm120
         run: python tools/compile_fused_kernel.py 80 86 89 90 100 120
 
