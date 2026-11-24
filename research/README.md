@@ -210,6 +210,21 @@ We measure temporal following with appearance-independent signals: per-frame hea
 - **Dense references (124 frames, 704×1280 reference and output).** Strength 2 lowered timing correlation on one seed (0.55 versus 0.74 without the bias, which however copied the reference person's sunglasses and face); strength 1.0/0.5 (0.68) or a 416×736 reference with the 720p output (0.64–0.65) tracked the timing without the leak. Scaling the strength by √(252 / rows per frame) (2 → 1.07) improved one of three seeds (0.55 → 0.67) and matched strength 2 on the other two.
 - **Long clips (243 frames, 10 s, 416×736).** On a close-up, the run without the bias kept the picture identity for two thirds and then reproduced the reference person (ArcFace to the picture 0.70 → 0.60 → 0.07, to the reference person 0.10 → 0.13 → 0.66). With TARA identity held (0.72 → 0.65 → 0.67; reference 0.08–0.11), but in the last third the output turned away from the reference performance. Full-body dance and two-person clips kept identity in both settings.
 
+### 4.7 Evaluation v1: 15 clips × 3 seeds (v0.2.0)
+
+Harness: [`research/eval`](eval/). 15 clips in five categories (short close-ups 90–107 frames, short wide shots, short two-person shots, and 243-frame / 10 s clips: close-up, full-body dance, wide, two-person), TARA LoRA v1.0 with strength 2 versus strength 0 (clock alignment only), seeds 42/7/11, DMD 8 steps, one identity picture. Raw data: [`eval_v1_metrics.csv`](eval/results/eval_v1_metrics.csv); table: [`eval_v1_summary.md`](eval/results/eval_v1_summary.md).
+
+| Category (n per variant) | Timing, no bias → TARA | Identity in the last third (picture), no bias → TARA | Reference-person similarity in the last third, no bias → TARA |
+|---|---|---|---|
+| short close-up (12) | 0.80 → 0.80 | 0.74 → 0.74 | 0.05 → 0.04 |
+| short wide (15) | 0.50 → 0.48 | 0.26 → 0.25 | (faces too small) |
+| short two-person (6) | 0.41 → 0.42 | 0.27 → 0.31 | 0.01 → 0.01 |
+| long close-up (3) | 0.78 → 0.76 | **0.47 ± 0.35 → 0.69 ± 0.03** | **0.31 ± 0.37 → 0.08 ± 0.00** |
+| long two-person (3) | 0.31 → 0.39 | **0.34 ± 0.07 → 0.52 ± 0.06** | **0.14 ± 0.18 → 0.00 ± 0.01** |
+| long wide (6) | 0.44 → 0.51 | (faces too small) | (faces too small) |
+
+On short clips the bias changes neither timing nor identity: the trained LoRA with the aligned clock suffices. On 10 s clips without the bias, identity drifts toward the reference-video person over time and one of three close-up seeds collapses into reproducing that person in the last third (picture 0.07, reference 0.74); with the bias, identity stays at its first-third level in every seed and timing correlation is equal or higher. Wide shots need a face-crop or body-level identity measure; the ArcFace values there are not informative. Fifteen clips and three seeds are a pilot: the long-clip effect rests on four clips.
+
 ## 5. Reproduction
 
 ### Training and preview inference
