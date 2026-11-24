@@ -10,7 +10,7 @@ Manifest: {"picture": "face.png", "prompt_file": "prompt.txt",
            "models": {...optional overrides...},
            "clips": [{"name": "closeup_01", "video": "clip.mp4", "category": "closeup",
                       "width": 416, "height": 736, "frames": 107, "start": 0.0}],
-           "variants": {"tara": {"strength": 2.0}, "nobias": {"strength": 0.0}},
+           "variants": {"native": {"native": true}, "clock_only": {"strength": 0.0}, "tara": {"strength": 2.0}},
            "seeds": [42, 7]}
 Frame counts must be 17n+5 (90, 107, 124, 243, ...).
 """
@@ -34,10 +34,10 @@ MODELS = {
 def graph(clip, variant, seed, picture, prompt, models, prefix):
     tara = {"model": ["4", 0], "motion_video_index": 1, "strength": 2.0, "window_seconds": 0.2,
             "falloff_seconds": 0.25, "max_penalty": 6.0, "attention_backend": "auto (fastest)"}
-    tara.update({k: v for k, v in variant.items() if k not in ("tara_lora_strength", "reference_width", "reference_height")})
+    tara.update({k: v for k, v in variant.items() if k not in ("tara_lora_strength", "reference_width", "reference_height", "native")})
     W, H, n = clip["width"], clip["height"], clip["frames"]
     rw, rh = variant.get("reference_width", W), variant.get("reference_height", H)
-    return {
+    g = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": models["unet"], "weight_dtype": "default"}},
         "2": {"class_type": "LoraLoaderModelOnly", "inputs": {"lora_name": models["turbo_lora"], "strength_model": 1.0, "model": ["1", 0]}},
         "3": {"class_type": "LoraLoaderModelOnly", "inputs": {"lora_name": models["tara_lora"],
@@ -64,6 +64,12 @@ def graph(clip, variant, seed, picture, prompt, models, prefix):
         "20": {"class_type": "CreateVideo", "inputs": {"fps": 24.0, "images": ["19", 0]}},
         "21": {"class_type": "SaveVideo", "inputs": {"filename_prefix": prefix, "format": "auto", "codec": "auto", "video": ["20", 0]}},
     }
+    if variant.get("native"):
+        # Baseline: MiniMax H3 native reference conditioning, no TARA node (no clock alignment, no bias).
+        del g["5"]
+        g["13"]["inputs"]["model"] = ["4", 0]
+        g["16"]["inputs"]["model"] = ["4", 0]
+    return g
 
 
 def call(url, path, data=None):
