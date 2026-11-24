@@ -26,7 +26,11 @@ BODY = 17
 def load_wholebody(ckpts, controlnet_aux_src):
     sys.path.insert(0, controlnet_aux_src)
     from custom_controlnet_aux.dwpose.wholebody import Wholebody
+    import torch
     c = Path(ckpts)
+    det, pose = c / 'hr16/yolox-onnx/yolox_l.torchscript.pt', c / 'hr16/DWPose-TorchScript-BatchSize5/dw-ll_ucoco_384_bs5.torchscript.pt'
+    if torch.cuda.is_available() and det.is_file() and pose.is_file():
+        return Wholebody(str(det), str(pose), torchscript_device='cuda')  # GPU; the ONNX path runs on CPU here
     return Wholebody(str(c / 'yzd-v/DWPose/yolox_l.onnx'), str(c / 'yzd-v/DWPose/dw-ll_ucoco_384.onnx'))
 
 
