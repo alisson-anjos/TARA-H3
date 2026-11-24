@@ -11,6 +11,12 @@ It adds no learned layers. Use it with a LoRA trained with the same policy; see 
 
 The full method, equations, numerical checks and limitations are in the technical report: [research/README.md](research/README.md).
 
+## Example
+
+![10 s clip: reference video, no temporal bias, TARA](docs/media/tara_long_closeup_seed42.gif)
+
+10 s clip, same seed. Without the temporal bias the output turns into the person of the reference video in the last third; with TARA the identity from the picture is kept (late in this clip, beyond the 4.5 s training length, the output turns away from the reference pose). Full videos: [long close-up](docs/media/tara_long_closeup_seed42.mp4), [long two-person](docs/media/tara_long_two_people_seed11.mp4). Results over 15 clips × 3 seeds: [research/README.md §4.7](research/README.md).
+
 ## Nodes
 
 | Node | What it does |
