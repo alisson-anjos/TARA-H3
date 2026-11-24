@@ -2,14 +2,14 @@ cff-version: 1.2.0
 message: "Please cite the technical report below when discussing TARA-H3, and retain the upstream software attributions."
 title: "TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning"
 type: software
-version: 0.2.0
+version: 0.2.1
 date-released: 2026-11-24
 authors:
   - family-names: Anjos
     given-names: Alisson
     alias: alisson-anjos
 repository-code: "https://github.com/alisson-anjos/TARA-H3"
-url: "https://github.com/alisson-anjos/TARA-H3/tree/v0.2.0/research"
+url: "https://github.com/alisson-anjos/TARA-H3/tree/v0.2.1/research"
 preferred-citation:
   type: report
   title: "TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning"
@@ -17,8 +17,8 @@ preferred-citation:
     - family-names: Anjos
       given-names: Alisson
   year: 2026
-  version: 0.2.0
+  version: 0.2.1
   institution:
     name: Independent research
-  url: "https://github.com/alisson-anjos/TARA-H3/tree/v0.2.0/research"
+  url: "https://github.com/alisson-anjos/TARA-H3/tree/v0.2.1/research"
   notes: "Experimental technical report; not peer reviewed."

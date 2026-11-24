@@ -11,6 +11,12 @@ It adds no learned layers. Use it with a LoRA trained with the same policy; see 
 
 The full method, equations, numerical checks and limitations are in the technical report: [research/README.md](research/README.md).
 
+## Example
+
+![reference video, native MiniMax H3, TARA](docs/media/tara_vs_native_couple.gif)
+
+Same seed, same LoRA, with and without the TARA node. The native output drifts from the reference's framing and timing; with TARA the performers follow the reference frame by frame (body-pose correlation 0.49 → 0.98). This clip is one of 15; across all of them (3 seeds each) TARA raised motion following from 0.45 to 0.80 on close-ups and from 0.83 to 0.97 on wider shots — see [research/README.md §4.7](research/README.md). [MP4](docs/media/tara_vs_native_couple.mp4)
+
 ## Nodes
 
 | Node | What it does |

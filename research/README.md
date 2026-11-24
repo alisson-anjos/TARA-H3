@@ -1,6 +1,6 @@
 # TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning
 
-**Alisson Anjos** · Technical report v0.2.0 · November 24, 2026  
+**Alisson Anjos** · Technical report v0.2.1 · November 24, 2026  
 **Status:** experimental implementation and preliminary evidence; not peer reviewed.
 
 ## Abstract
@@ -288,8 +288,8 @@ This document is an openly available **technical report/software artifact**, not
   year = {2026},
   institution = {Independent research},
   type = {Technical report},
-  number = {v0.2.0},
-  url = {https://github.com/alisson-anjos/TARA-H3/tree/v0.2.0/research},
+  number = {v0.2.1},
+  url = {https://github.com/alisson-anjos/TARA-H3/tree/v0.2.1/research},
   note = {Experimental implementation; not peer reviewed}
 }
 ```
@@ -305,5 +305,6 @@ This document is an openly available **technical report/software artifact**, not
 
 ## Version history
 
+- **v0.2.1 — 2026-11-24:** Evaluation of motion following against native MiniMax H3 on 15 clips × 3 seeds with face-motion and DWPose body-pose measures (Section 4.7); the v1 identity analysis was withdrawn because its largest-face metric rewarded duplicated identities.
 - **v0.2.0 — 2026-11-24:** Sage Partitions, Sage Fused (Triton) and automatic backend selection; bias scheduling by noise level and block range; end-to-end sampling cost and fidelity on one clip (Section 4.4); ablations on clock alignment, bias and the LoRA (Section 4.5); report moved to the TARA-H3 repository.
 - **v0.1.0 — 2026-10-23:** Initial implementation-oriented report, equations, diagrams, numerical evidence, isolated timing data, reproduction pointers, and limitations.
