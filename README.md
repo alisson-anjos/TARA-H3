@@ -27,13 +27,16 @@ The bias is the same in every backend; only the kernel changes. The default pick
 
 | `attention_backend` | How | Needs |
 |---|---|---|
-| **sage fused (fastest)** (default) | One SageAttention Triton pass; the bias is computed inside the kernel, only on reference-key tiles of target-query rows | `sageattention` + `triton` |
+| **auto (fastest)** (default) | Kitchen one-pass when a verified binary exists for the GPU, otherwise sage fused, then the partition backends | — |
+| sage fused (triton) | One SageAttention Triton pass; the bias is computed inside the kernel, only on reference-key tiles of target-query rows | `sageattention` + `triton` |
 | sage partitions | Exact log-sum-exp merge of SageAttention partitions | `sageattention` |
 | flash partitions | Exact log-sum-exp merge of FlashAttention partitions | PyTorch CUDA |
-| comfy kitchen | Optional one-pass CUDA extension (downloaded and verified on first use) | Linux/Windows, supported GPU |
+| comfy kitchen | One-pass CUDA kernel from the comfy-kitchen fork (downloaded and SHA-256 verified on first use) | Linux sm80–sm120, Windows sm86/89/120 |
 | flex (original) | PyTorch FlexAttention score modifier | PyTorch |
 
-Fallback chain: sage fused → sage partitions → flash partitions. With Model Sparse Attention (sol-attn) connected, the sol path is used.
+**Kitchen one-pass kernel availability.** Prebuilt binaries (built per commit by CI, SHA-256 pinned in `tara_h3/h3_temporal_binaries.json`) cover Linux sm80/86/89/90/100/120 and Windows sm86/89/120. On any other NVIDIA GPU (sm80 or newer) with a CUDA toolkit installed, TARA-H3 builds the kernel once for that GPU from source files pinned by SHA-256 at the same commit (`nvcc` from `CUDA_HOME`/`CUDA_PATH` or `PATH`; on Windows also `cl`, e.g. from an "x64 Native Tools" prompt) and caches it. Set `TARA_H3_TEMPORAL_LOCAL_BUILD=0` to skip local builds, `TARA_H3_TEMPORAL_AUTO_INSTALL=0` to skip the kernel entirely, `TARA_H3_TEMPORAL_CACHE_DIR` to move the cache. Without either, auto uses sage fused (Triton compiles it on first use).
+
+Fallback chain for auto: Kitchen one-pass → sage fused → sage partitions → flash partitions; each failure is logged once. With **Model Sparse Attention (sol-attn)** connected, TARA uses the sol one-pass kernel with the bias fused in (and the dense chain for steps/blocks that sol leaves dense). With `strength 0` only the clock alignment remains and the selected backend runs unchanged.
 
 ## Where the bias is applied
 
@@ -50,7 +53,21 @@ Fallback chain: sage fused → sage partitions → flash partitions. With Model 
 
 RTX 5090, MiniMax H3 Ref2VA INT8, DMD 8 steps, 416x736, 107 frames, one reference picture plus one reference video. Seconds per sampling step, same seed:
 
-Measurements in progress; see [research/README.md](research/README.md) for the isolated attention timings.
+| Attention | s/it | PSNR vs exact flash partitions |
+|---|---:|---:|
+| sage, no temporal bias (reference speed) | ~3.4 | — |
+| flash partitions | 7.02 | reference |
+| sage partitions | 5.54 | 26.5 dB |
+| sage fused (triton) | 4.26 | 27.5 dB |
+| **Kitchen one-pass (auto)** | **3.81** | **28.3 dB** |
+| sage fused, `sigma >= 0.90` preset | 3.94 | 25.9 dB |
+| sage fused, `blocks 0-11` preset | 3.58 | 17.8 dB |
+| sol-attn (tau 1.3) + TARA, Kitchen one-pass | 4.93 | 25.2 dB |
+| sol-attn (tau 1.3) without TARA | 3.22 | (does not follow the reference) |
+
+Two runs of the same configuration differ by about 25–28 dB PSNR (quantized kernels are not bit-exact), so values in that range match the exact reference visually. At this short sequence (24k tokens) sol is not faster than dense; its gain grows with sequence length.
+
+Without the TARA LoRA, the base Ref2VA model reproduces the reference video's content in this character-replacement setup, with or without TARA. TARA aligns time; the LoRA learns to use the reference video for timing while taking identity from the pictures.
 
 ## Install
 

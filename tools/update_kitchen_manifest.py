@@ -32,7 +32,27 @@ binaries = []
 for b in sorted(build['builds'], key=lambda b: (b['platform'] != 'Linux', b['arch'])):
     ext = 'so' if b['platform'] == 'Linux' else 'dll'
     binaries.append(dict(b, file=f"libck_temporal_sm{b['arch']}.{ext}"))
-manifest.update(release_tag=tag, source_commit=commit, binaries=binaries)
+# Sources for a local build on GPUs without a prebuilt (needs nvcc): pinned file by file.
+tree = json.loads(fetch(f'https://api.github.com/repos/{REPO}/git/trees/{commit}?recursive=1'))['tree']
+TEMPORAL, SAGE = 'comfy_kitchen/backends/cuda/native_temporal/', 'comfy_kitchen/backends/cuda/sage_attention/'
+
+
+def needed(path_):
+    if path_.startswith(TEMPORAL) and '/vendor/' not in path_:
+        return path_.endswith(('.cu', '.cuh', '.h', '.cpp', 'build.py'))
+    if path_.startswith(SAGE) and path_.count('/') == SAGE.count('/'):
+        return path_.endswith(('.cuh', '.h')) or (path_.endswith('.cu') and path_[len(SAGE):].startswith('sol_attn_'))
+    return False
+
+
+sources = []
+for item in tree:
+    path_ = item['path']
+    if item['type'] != 'blob' or not needed(path_):
+        continue
+    data = fetch(f'https://raw.githubusercontent.com/{REPO}/{commit}/{path_}')
+    sources.append({'path': path_, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)})
+manifest.update(release_tag=tag, source_commit=commit, binaries=binaries, sources=sorted(sources, key=lambda x: x['path']))
 path.write_text(json.dumps(manifest, indent=2) + '\n')
 
 boot = ROOT / 'minimax_h3_temporal_bootstrap.py'
@@ -43,4 +63,4 @@ for name, rel in (('temporal_attention.py', 'comfy_kitchen/temporal_attention.py
     if n != 1:
         sys.exit(f'could not update the pinned hash of {name}')
 boot.write_text(text)
-print(f'pinned {tag}: {len(binaries)} binaries')
+print(f'pinned {tag}: {len(binaries)} binaries, {len(sources)} source files')

@@ -1,11 +1,11 @@
 # TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning
 
-**Alisson Anjos** · Technical report v0.1.0 · October 23, 2026  
+**Alisson Anjos** · Technical report v0.2.0 · November 24, 2026  
 **Status:** experimental implementation and preliminary evidence; not peer reviewed.
 
 ## Abstract
 
-Native reference-video conditioning and frame-aligned video guidance provide different ways to control video generation. In our MiniMax H3 experiments, native reference conditioning alone did not reliably reproduce the timing of a source performance. We introduce **TARA-H3**, an implementation that retains H3's native reference-video latent tokens, aligns the motion reference's temporal rotary coordinates with the generated video's clock, and adds a bounded temporal penalty only to target-video queries attending to motion-reference keys. Image references keep their native coordinates. No new learned layers are required by the attention modification itself. We implement the policy through FlexAttention, an exact Flash Attention partition decomposition, and optional custom one-pass Comfy Kitchen and Sol Attention kernels. We report preliminary numerical checks and isolated attention timings, and distinguish these from informal video observations. This report provides an implementation-oriented account, not a claim of first invention of temporal attention or a demonstrated universal improvement.
+Native reference-video conditioning and frame-aligned video guidance provide different ways to control video generation. In our MiniMax H3 experiments, native reference conditioning alone did not reliably reproduce the timing of a source performance. We introduce **TARA-H3**, an implementation that retains H3's native reference-video latent tokens, aligns the motion reference's temporal rotary coordinates with the generated video's clock, and adds a bounded temporal penalty only to target-video queries attending to motion-reference keys. Image references keep their native coordinates. No new learned layers are required by the attention modification itself. We implement the policy through FlexAttention, exact Flash and Sage partition decompositions, a SageAttention Triton kernel with the bias fused in, and optional custom one-pass Comfy Kitchen and Sol Attention kernels. We report numerical checks, isolated attention timings, end-to-end sampling cost on one clip (the fastest exact backend is about 12% slower per step than dense SageAttention without the bias, versus about 2× for the original partition method), and single-clip ablations, and distinguish these from informal video observations. This report provides an implementation-oriented account, not a claim of first invention of temporal attention or a demonstrated universal improvement.
 
 ## 1. Motivation and scope
 
@@ -130,6 +130,26 @@ The Sol extension integrates the policy with its routing and exact-attention con
 
 These extensions are project-specific additions, not a claim that upstream Kitchen or upstream Sol already provides this policy. Prebuilt binaries and source compilation support are separate distribution mechanisms, with explicit compatibility checks.
 
+### 3.5 Sage Partitions (v0.2.0)
+
+The partition decomposition of Section 3.2 only needs each partition's output and natural-log normalizer. SageAttention returns both (`return_lse=True`), so the same exact decomposition runs on INT8 SageAttention kernels instead of FlashAttention. The numerical difference to Flash Partitions is of the same size as the difference between dense SageAttention and dense FlashAttention.
+
+### 3.6 Sage Fused: the bias inside a Triton kernel (v0.2.0)
+
+The penalty depends only on the pair (query frame, key frame), and only target-query × motion-key pairs receive it. We modify SageAttention's per-block INT8 Triton kernel (Apache-2.0) as follows:
+
+- the key loop is split at the motion-video rows; keys before and after them run the unmodified loop;
+- motion keys of query tiles that overlap the target rows add the penalty, computed in registers from a per-latent-frame time vector (H3's first latent frame is shorter, so the clock is not uniform);
+- non-target queries inside a mixed tile receive no penalty.
+
+This is a single attention pass with no partitions and no FP32 merges. It needs only `sageattention` and `triton` (no compiled extension) and is compiled ahead of time for sm80–sm120 in CI. On a non-uniform clock it matches Flash Partitions to a mean absolute difference below 2·10⁻³ in the unit tests.
+
+### 3.7 Backend selection and bias scheduling (v0.2.0)
+
+`auto` picks the Kitchen one-pass kernel when a verified binary exists for the GPU, otherwise Sage Fused, then Sage Partitions, then Flash Partitions; each failure is logged once per model. With Model Sparse Attention (sol-attn) connected, the Sol one-pass kernel is used; steps and blocks that sol leaves dense use the dense chain. With zero strength or cap, only the clock alignment remains and the selected attention backend runs unchanged.
+
+The bias can also be restricted in time or depth: only at noise levels σ ≥ σ_min (later steps run native attention), or only in a block range. These are inference-time approximations of the trained policy and are evaluated in Section 4.4.
+
 ## 4. Preliminary evidence
 
 ### 4.1 Numerical checks
@@ -154,11 +174,33 @@ Raw measurements: [attention_benchmark.json](evidence/attention_benchmark.json).
 
 These numbers demonstrate feasibility and motivate further measurement. They are **not** full-model throughput, controlled multi-run statistics, RTX 5090 measurements, a comparison at matched visual quality, or a general speedup guarantee. Quantized and sparse implementations have different numerical behavior.
 
-### 4.3 Informal workflow observations
+### 4.3 Informal workflow observations (v0.1.0)
 
 In author-run ComfyUI tests, a motion-transfer LoRA previously trained using aligned guide latents also worked with the native temporal patch. A newly trained early temporal checkpoint showed weaker identity retention in some clips. These observations suggest that useful learned behavior can transfer across conditioning modes, but do not isolate the contribution of weights, prompts, RoPE alignment, attention bias, or sampling settings.
 
 The user-facing demonstration page includes synchronized videos and reference images: [BFS Flash Partitions documentation](https://github.com/alisson-anjos/ComfyUI-BFSNodes/blob/feat/h3-native-temporal/docs/H3_FLASH_PARTITIONS.md). Demonstrations are qualitative examples, not a representative benchmark. Pixel difference and PSNR against a guide are not sufficient quality metrics when subjects or backgrounds are intentionally changed.
+
+### 4.4 End-to-end sampling cost and fidelity (v0.2.0)
+
+Setup: RTX 5090, PyTorch 2.14 (CUDA 13.0), MiniMax H3 Ref2VA INT8, DMD 8-step LoRA plus the TARA motion-transfer LoRA v1.0, 416×736, 107 frames (24,087 packed rows, 9,568 motion rows), one reference picture and one reference video, fixed seed and prompt. Seconds per sampling step after warm-up; PSNR of the decoded video against Flash Partitions. Single runs: these are measurements on one clip, not distributions.
+
+| Attention | s/it | PSNR vs Flash Partitions |
+|---|---:|---:|
+| SageAttention, no temporal bias | ~3.4 | — |
+| Flash Partitions | 7.02 | reference |
+| Sage Partitions | 5.54 | 26.5 dB |
+| Sage Fused (Triton) | 4.26 | 27.5 dB |
+| Kitchen one-pass | 3.81 | 28.3 dB |
+| Sage Fused, bias only at σ ≥ 0.90 (5 of 8 steps) | 3.94 | 25.9 dB |
+| Sage Fused, bias only in blocks 0–11 | 3.58 | 17.8 dB |
+| sol-attn (τ = 1.3) + TARA, Sol one-pass | 4.93 | 25.2 dB |
+
+Repeating one configuration with quantized kernels gives 25–28 dB, so the exact backends and the σ ≥ 0.90 schedule are visually indistinguishable from the reference, while restricting the bias to blocks 0–11 changes the result and lets reference appearance leak in some frames. At this length sol-attn is not faster than dense attention; its benefit grows with sequence length. The temporal Sol kernel costs about 32% more than sol-attn without the bias on its sparse steps, the Kitchen dense kernel about 12% more than dense SageAttention.
+
+### 4.5 Ablations on the same clip (v0.2.0)
+
+- **Clock alignment and bias are both needed with the trained LoRA.** With strength 0 (clock alignment only), the reference video's appearance bleeds into the output (ghosted overlays). Without the TARA node at all (sol-attn only), the output no longer follows the reference video's framing and setting.
+- **The LoRA is needed for character replacement.** Without the TARA LoRA, the base Ref2VA model reproduces the reference video's subject in this setup, with or without TARA. TARA aligns time; the LoRA learns to take timing from the reference video and identity from the pictures. We therefore do not claim a training-free method for this task.
 
 ## 5. Reproduction
 
@@ -166,12 +208,14 @@ The user-facing demonstration page includes synchronized videos and reference im
 
 The reproducible code entry points in this fork are:
 
-- [Temporal policy and layout](../../toolkit/h3_native_temporal.py).
-- [H3 model integration](../../extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py).
-- [Training and inference transformer](../../extensions_built_in/diffusion_models/minimax_h3/src/transformer.py).
-- [Preview pipeline](../../extensions_built_in/diffusion_models/minimax_h3/src/pipeline.py).
-- [Portable training configuration](../../config/examples/train_h3_native_temporal.yaml).
-- [Setup details](../../docs/H3_NATIVE_TEMPORAL.md).
+Training code lives in the ai-toolkit fork ([snapshot `tara-h3-v0.1.0`](https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.0)):
+
+- [Temporal policy and layout](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/toolkit/h3_native_temporal.py).
+- [H3 model integration](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/extensions_built_in/diffusion_models/minimax_h3/minimax_h3.py).
+- [Training and inference transformer](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/extensions_built_in/diffusion_models/minimax_h3/src/transformer.py).
+- [Preview pipeline](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/extensions_built_in/diffusion_models/minimax_h3/src/pipeline.py).
+- [Portable training configuration](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/config/examples/train_h3_native_temporal.yaml).
+- [Setup details](https://github.com/alisson-anjos/ai-toolkit/blob/tara-h3-v0.1.0/docs/H3_NATIVE_TEMPORAL.md).
 
 ```bash
 git clone --branch feat/h3-native-temporal-motion https://github.com/alisson-anjos/ai-toolkit.git
@@ -187,9 +231,9 @@ The patch introduces no new learned layers; whether to train an additional LoRA 
 
 ### ComfyUI inference
 
-Use the experimental [BFS branch](https://github.com/alisson-anjos/ComfyUI-BFSNodes/tree/feat/h3-native-temporal). Enable native temporal alignment in the H3 Conditioning node, connect its MODEL input, and route its **MODEL output to the sampling guider**. Disable conflicting Add Guide/first-frame/continuity paths. Select a supported backend; unknown attention/block replacement patches must not be silently combined.
+Install this repository as a ComfyUI custom node package and add **TARA-H3 Temporal Alignment** after the model loaders; route its **MODEL output to the sampling guider** (the same nodes also ship in ComfyUI-BFSNodes for now). Disable conflicting Add Guide/first-frame/continuity paths. Select a supported backend; unknown attention/block replacement patches must not be silently combined.
 
-The optional [Kitchen extension fork](https://github.com/alisson-anjos/comfy-kitchen/tree/feat/h3-native-temporal) supplies project-specific one-pass kernels. Follow its build/install documentation for the current compatibility matrix. GPU architecture, CUDA driver and platform compatibility still matter. A successful build or ABI check alone does not validate video quality on that platform.
+The optional [Kitchen extension fork](https://github.com/alisson-anjos/comfy-kitchen/tree/feat/h3-native-temporal) supplies project-specific one-pass kernels; its CI builds and releases them per commit, and `tara_h3/h3_temporal_binaries.json` pins the release that TARA-H3 downloads and verifies. Follow its build/install documentation for the current compatibility matrix. GPU architecture, CUDA driver and platform compatibility still matter. A successful build or ABI check alone does not validate video quality on that platform.
 
 ## 6. Evaluation still needed
 
@@ -220,8 +264,8 @@ This document is an openly available **technical report/software artifact**, not
   year = {2026},
   institution = {Independent research},
   type = {Technical report},
-  number = {v0.1.0},
-  url = {https://github.com/alisson-anjos/ai-toolkit/tree/tara-h3-v0.1.0/research/tara-h3},
+  number = {v0.2.0},
+  url = {https://github.com/alisson-anjos/TARA-H3/tree/v0.2.0/research},
   note = {Experimental implementation; not peer reviewed}
 }
 ```
@@ -237,4 +281,5 @@ This document is an openly available **technical report/software artifact**, not
 
 ## Version history
 
+- **v0.2.0 — 2026-11-24:** Sage Partitions, Sage Fused (Triton) and automatic backend selection; bias scheduling by noise level and block range; end-to-end sampling cost and fidelity on one clip (Section 4.4); ablations on clock alignment, bias and the LoRA (Section 4.5); report moved to the TARA-H3 repository.
 - **v0.1.0 — 2026-10-23:** Initial implementation-oriented report, equations, diagrams, numerical evidence, isolated timing data, reproduction pointers, and limitations.

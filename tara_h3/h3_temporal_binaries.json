@@ -102,5 +102,112 @@
       "source_commit": "fff84a9a42c7fefc74744c486ab8ceafc0135068",
       "file": "libck_temporal_sm120.dll"
     }
+  ],
+  "sources": [
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/build.py",
+      "sha256": "0d0a874a7bf49ace66821e914b5ce477d7774f95503104f2ed77827b90c797b6",
+      "bytes": 2907
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/native_error.cpp",
+      "sha256": "4448287632004d0515044daeb91e01c2531ba85354165f20065db7364d7332b5",
+      "bytes": 378
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/native_error.h",
+      "sha256": "96364a0bd423d5ba1a964f88878ed5b0cd097a47398e1141d8f18c76440e0f8e",
+      "bytes": 255
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/sage_temporal.cu",
+      "sha256": "52980aa2957a7076a6c6880a42eb48b464dc01ba21706e8fc99ed98c204eaddc",
+      "bytes": 4511
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/sol_attn_exact_temporal.cu",
+      "sha256": "99eb0ae98df557529527ebeb5c4954d439aa8b33667a31854f4631774844e02d",
+      "bytes": 13126
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/sol_attn_temporal.cu",
+      "sha256": "51e220a13c9e7bd5906cb266c612238ae38e471cfbc23979c545b6eaa915244e",
+      "bytes": 16725
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/native_temporal/temporal_bias.cuh",
+      "sha256": "dd97fe44b4f8a9d8de7c772dbd9834f37098225d7045ee605b20d2a149051ddc",
+      "bytes": 1722
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/attn_utils.cuh",
+      "sha256": "a13cc4e35543bf5ee042b6af75d50a1e90c5535f29acf8bca25e68cf4a5e955a",
+      "bytes": 56323
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/cp_async.cuh",
+      "sha256": "689f1ac8bcc7bbf223a39bf7e296388dd7c660f613ea9b16d71438d459cb3502",
+      "bytes": 5428
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/math.cuh",
+      "sha256": "b879478a11bcecd80675a0fe12be7c4092ba25e03fcb24dcb72be7196899cb1a",
+      "bytes": 5315
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/mma.cuh",
+      "sha256": "46fa1f6992f1970b38b7d943442a7547190576a4f9dc9eacc5162df371eb7fb5",
+      "bytes": 38011
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/numeric_conversion.cuh",
+      "sha256": "14cbcb4345c039d24f967a2bbf6ebc8420519adee9798f96f4dfb397ddb2adf6",
+      "bytes": 5216
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/permuted_smem.cuh",
+      "sha256": "cd7c61a559714adcde2a3ed00c163a463a1dda876e9e603a3b31bc3f53d06278",
+      "bytes": 8261
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/qk_int_sv_i8_cuda.cuh",
+      "sha256": "d7d3ea07199729126438627819bceb5055695ca45609bf98d38fd7611a08cd6e",
+      "bytes": 61161
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_exact.cu",
+      "sha256": "0c0b821d7be8e0f2f43ef63296a73677dcc13edbd66c768dade5285c206076f3",
+      "bytes": 12465
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_preprocess.cu",
+      "sha256": "ab34374b55cf7597e5cd2fb0639c85dfbbc20ff8300fb2e50e9e4e3aaccff724",
+      "bytes": 13701
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_producer.cu",
+      "sha256": "22c59a0419140c4063febd9acef2c790fd6fed84aa1f35096bca19a552d06b65",
+      "bytes": 6762
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_route.cu",
+      "sha256": "276af6b6e2e8be28930a31ad239173d6f8c3ec81d5b74b92b780a3f5962d9f6f",
+      "bytes": 14977
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_token.cu",
+      "sha256": "086ea1c35f4351b1a608582ec1c7763671b642542c04e6961628648c2412897a",
+      "bytes": 23810
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_attn_vtranspose.cu",
+      "sha256": "d886c2728ab607f28380130edc49fdf78cf24893b0c3e67c91d23ba760fc78a3",
+      "bytes": 4603
+    },
+    {
+      "path": "comfy_kitchen/backends/cuda/sage_attention/sol_layout.cuh",
+      "sha256": "5c961f9409ade189fdfcd3c1e29765a260f1f0d5ac18052d25c2f55afc050aba",
+      "bytes": 21628
+    }
   ]
 }

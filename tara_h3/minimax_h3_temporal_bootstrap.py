@@ -1,6 +1,8 @@
 """Pinned platform/GPU-specific bootstrap for the optional temporal extension.
 
-Verified release bytes only. No pip, compilation, site-packages writes or Kitchen
+Verified release bytes only: a prebuilt binary for the GPU architecture, or, when
+none is published and a CUDA toolkit (nvcc) is installed, a local build from source
+files pinned by SHA-256 at the same commit. No pip, site-packages writes or Kitchen
 replacement. Build/ABI checks do not imply GPU runtime validation.
 """
 import ctypes
@@ -10,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -71,15 +75,13 @@ def compatible(device):
     if os.environ.get('TARA_H3_TEMPORAL_AUTO_INSTALL','1').lower() in ('0','false','off'):
         return False,'automatic setup disabled'
     if platform.system() not in ('Linux','Windows') or platform.machine().lower() not in ('x86_64','amd64') or ctypes.sizeof(ctypes.c_void_p)!=8:
-        return False,'automatic prebuilts require 64-bit Linux or Windows on x86_64'
+        return False,'automatic setup requires 64-bit Linux or Windows on x86_64'
     import torch
     if getattr(torch.version,'hip',None) or not torch.cuda.is_available():
-        return False,'automatic prebuilts require NVIDIA CUDA'
+        return False,'automatic setup requires NVIDIA CUDA'
     target=binary_for_device(device)
-    if target is None:
-        return False,'no pinned prebuilt for this operating system/GPU architecture'
     # The sidecar uses CUDA 13's static runtime; PyTorch itself may use an older CUDA.
-    if driver_version()<MANIFEST['minimum_cuda_driver_version']:
+    if target is not None and driver_version()<MANIFEST['minimum_cuda_driver_version']:
         return False,'the prebuilt requires an NVIDIA driver supporting CUDA 13'
     import comfy_kitchen
     if not comfy_kitchen.int8_attention_is_available(device):
@@ -154,6 +156,55 @@ def load_api(root,target):
     return module
 
 
+def local_toolchain():
+    """(nvcc, host compiler or None) for a local build, or a reason string."""
+    if os.environ.get('TARA_H3_TEMPORAL_LOCAL_BUILD','1').lower() in ('0','false','off'):
+        return 'local build disabled (TARA_H3_TEMPORAL_LOCAL_BUILD=0)'
+    if not MANIFEST.get('sources'):
+        return 'no pinned sources for a local build'
+    home=os.environ.get('CUDA_HOME') or os.environ.get('CUDA_PATH')
+    exe='nvcc.exe' if platform.system()=='Windows' else 'nvcc'
+    nvcc=str(Path(home)/'bin'/exe) if home and (Path(home)/'bin'/exe).is_file() else shutil.which('nvcc')
+    if not nvcc:
+        return 'no prebuilt for this GPU and no CUDA toolkit (nvcc) for a local build'
+    compiler=None
+    if platform.system()=='Windows':
+        compiler=shutil.which('cl')
+        if not compiler:
+            return 'no prebuilt for this GPU; a local build needs the MSVC compiler (run ComfyUI from a "x64 Native Tools" prompt)'
+    return nvcc,compiler
+
+
+def build_locally(device):
+    """Build the extension for this GPU from the pinned sources into the cache; returns the loaded API."""
+    import torch
+    major,minor=torch.cuda.get_device_capability(device);arch=major*10+minor
+    if arch<80:raise RuntimeError(f'SM{arch} is not supported (needs SM80 or newer)')
+    tools=local_toolchain()
+    if isinstance(tools,str):raise RuntimeError(tools)
+    nvcc,compiler=tools
+    system=platform.system()
+    target=dict(platform=system,arch=arch,native_abi=1,file=f"libck_temporal_sm{arch}"+('.dll' if system=='Windows' else '.so'))
+    root=cache_base()/f"v1-{system.lower()}-x86_64-sm{arch}-local-{SOURCE_COMMIT[:12]}"
+    with file_lock(root/'.install.lock',1800):
+        binary=root/'backends/cuda/native_temporal'/target['file']
+        if not binary.is_file():
+            print(f'[TARA-H3] No prebuilt for {system} SM{arch}: building the one-pass extension locally with {nvcc} (one time, a few minutes).',flush=True)
+            src=root/'src'
+            for item in MANIFEST['sources']:
+                download(src/item['path'],RAW+'/'+item['path'],item['sha256'],item['bytes'])
+            script=src/'comfy_kitchen/backends/cuda/native_temporal/build.py'
+            command=[sys.executable,str(script),'--arch',str(arch),'--jobs','2','--build-dir',str(root/'obj'),'--output',str(binary),'--nvcc',nvcc]
+            if compiler:command+=['--compiler',compiler]
+            binary.parent.mkdir(parents=True,exist_ok=True)
+            result=subprocess.run(command,capture_output=True,text=True,timeout=1800)
+            if result.returncode!=0:
+                raise RuntimeError('local build failed: '+(result.stderr or result.stdout).strip()[-600:])
+        for rel,url,sha,limit in COMMON_ASSETS:
+            download(root/rel,url,sha,limit)
+        return load_api(root,target)
+
+
 def ensure(device):
     """At most one automatic setup attempt per device/cache location per process."""
     key=(str(cache_base()),platform.system(),str(device))
@@ -167,8 +218,7 @@ def ensure(device):
                 print(f'[TARA-H3] Automatic native setup skipped: {reason}; retaining the existing backend.',flush=True)
                 return None
             target=binary_for_device(device)
-            if target is None:raise RuntimeError('No pinned native temporal prebuilt for this device')
-            module=provision(cache_root(target),target)
+            module=provision(cache_root(target),target) if target is not None else build_locally(device)
             if not module.is_available(device):raise RuntimeError('Verified native extension is unavailable for this device')
             _READY[key]=module
             return module

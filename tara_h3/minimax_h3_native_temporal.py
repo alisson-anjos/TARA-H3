@@ -33,7 +33,8 @@ except ImportError:
 
 MARKER = 'bfs_h3_native_temporal_v1'
 SOL_BACKEND = 'sol-attn frame bias (experimental)'
-BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)', 'sage partitions', 'sage fused (fastest)']
+BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)', 'sage partitions', 'sage fused (triton)', 'auto (fastest)']
+AUTO = BACKENDS[5]
 # bias_preset -> (bias_block_start, bias_block_end, bias_sigma_min); 'custom' reads the three inputs.
 BIAS_PRESETS = {'full': (0, 99, 0.0), 'blocks 0-11 (fast)': (0, 11, 0.0), 'sigma >= 0.90 (fast)': (0, 99, 0.90), 'custom': None}
 
@@ -92,7 +93,7 @@ def temporal_layout(native, refs, keyframes, video_index=1):
     st = torch.unique_consecutive(result.position_ids[source, 0])
     tt = torch.unique_consecutive(result.position_ids[target, 0])
     if st.shape != tt.shape or not torch.allclose(st, tt, atol=1e-9, rtol=0):
-        raise ValueError('Native temporal guide and output must have identical temporal grids. Use the same frame window, 24 fps and matching H3 frame count (e.g. 107). No automatic motion stretching is applied.')
+        raise ValueError('Native temporal guide and output must have identical temporal grids. Use the same frame window, 24 fps and the same H3 frame count for both (17n+5, e.g. 107, 124 or 141). No automatic motion stretching is applied.')
     return result, source, target
 
 
@@ -100,14 +101,14 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
     first=[log_first]
     failed = set() if failed is None else failed
     def partitions(q, k, v, biases=None):
-        if backend == BACKENDS[4] and fused is not None and 'fused' not in failed and not biases:
+        if backend in (BACKENDS[4], AUTO) and fused is not None and 'fused' not in failed and not biases:
             try:
                 return fused.attention(q,k,v,plan,ctx.strength,ctx.window,ctx.falloff,ctx.cap)
             except RuntimeError as exc:
                 failed.add('fused')
                 print(f'[TARA-H3] sage fused failed ({exc}); falling back to sage partitions.',flush=True)
         extra = {'reference_biases': biases} if biases else {}
-        if backend in (BACKENDS[3], BACKENDS[4]) and 'sage' not in failed:
+        if backend in (BACKENDS[3], BACKENDS[4], AUTO) and 'sage' not in failed:
             try:
                 return fast.attention(q,k,v,plan,flash=fast.sage_with_lse,**extra)
             except (ImportError, RuntimeError) as exc:
@@ -126,6 +127,11 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
                             skip_output_reshape=skip_output_reshape, **kwargs)
         if mask is not None:
             raise ValueError('Native temporal attention does not support another attention mask override.')
+        if not (ctx.strength and ctx.cap) and not reference_biases:
+            # No temporal bias (clock alignment only): the selected attention backend runs unchanged.
+            if previous:
+                return previous(original, q, k, v, heads, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
+            return original(q, k, v, heads, skip_reshape=skip_reshape, skip_output_reshape=skip_output_reshape, **kwargs)
         if not skip_reshape:
             q, k, v = [x.view(x.shape[0], x.shape[1], heads, -1).transpose(1, 2) for x in (q,k,v)]
         chosen = backend
@@ -145,8 +151,10 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
             if reason is not None:
                 print(f'[TARA-H3] sol-attn dense fallback: {reason}',flush=True)
             display_backend=chosen
-            if chosen in (SOL_BACKEND,BACKENDS[2]) and sol.native_kernel.api_for(q) is not None:
+            if chosen in (SOL_BACKEND,BACKENDS[2],AUTO) and sol.native_kernel.api_for(q) is not None:
                 display_backend='sol-attn one-pass (native Kitchen)' if chosen==SOL_BACKEND else 'comfy kitchen one-pass (native)'
+            elif chosen==AUTO:
+                display_backend='auto: sage fused (no Kitchen one-pass binary for this GPU)'
             print(f'[TARA-H3] first attention starting: backend={display_backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
@@ -162,6 +170,17 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
                                 token_aug=sparse_patch.extra_tokens,sink_q=sink_q)
         elif chosen == BACKENDS[2]:
             out = kitchen.attention(q,k,v,plan,ctx)
+        elif chosen == AUTO:
+            out = None
+            if 'kitchen' not in failed:
+                try:
+                    out = sol.native_kernel.run('dense',q,k,v,plan,ctx)
+                except (ImportError, OSError, RuntimeError) as exc:
+                    print(f'[TARA-H3] Kitchen one-pass failed ({exc}); using sage fused.',flush=True)
+                if out is None:
+                    failed.add('kitchen')
+            if out is None:
+                out = partitions(q,k,v)
         elif chosen in (BACKENDS[0], BACKENDS[3], BACKENDS[4]):
             out = partitions(q,k,v)
         else:
@@ -228,7 +247,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     dense_override, sparse_patch = sparse_compat.selection(opts)
     selected_dense_at_setup=dense_backend_selection(dense_override)
     sparse_compat.without_owned_blocks(opts, sparse_patch)
-    if backend==BACKENDS[2] or selected_dense_at_setup=='comfy_kitchen_int8' or sparse_patch is not None:
+    if backend in (BACKENDS[2], AUTO) or selected_dense_at_setup=='comfy_kitchen_int8' or sparse_patch is not None:
         sol.native_kernel.prepare_model(model)
     patched = model.clone()
     previous = patched.model_options.get('model_function_wrapper')
@@ -275,7 +294,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
             if reference_cache[0] is not layout or reference_cache[1] is not controls or reference_cache[2] != device:
                 reference_cache[:] = [layout,controls,device,binding.build_biases(layout,payload.get('refs',[]),plan_cache[1],controls,device)]
             reference_biases=reference_cache[3]
-            if reference_biases and active_backend not in (BACKENDS[3], BACKENDS[4]):
+            if reference_biases and active_backend not in (BACKENDS[3], BACKENDS[4], AUTO):
                 active_backend=BACKENDS[0]
                 if not logged[0]:
                     print('[TARA-H3 reference binding] ACTIVE: exact Picture logit gains, optional target masks; using Flash Partitions (Kitchen/Sol one-pass bypassed).',flush=True)
@@ -286,7 +305,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
             if token_cache[0] is not layout or token_cache[1] is not token_control or token_cache[2] != device:
                 token_cache[:] = [layout,token_control,device,token_weights.attention_biases(layout,plan_cache[1],token_control,device)]
             reference_biases=list(reference_biases or [])+token_cache[3]
-            if active_backend not in (BACKENDS[3], BACKENDS[4]):active_backend=BACKENDS[0]
+            if active_backend not in (BACKENDS[3], BACKENDS[4], AUTO):active_backend=BACKENDS[0]
             if not logged[0]:print('[TARA-H3 token weights] ACTIVE: prompt text-key logit gains, Flash Partitions; visual rows unchanged.',flush=True)
         if float(args['timestep'].flatten()[0]) >= bias_sigma_min:
             to['optimized_attention_override'] = attention_override(ctx,reference_biases=reference_biases, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend,
@@ -337,7 +356,7 @@ class TARAH3TemporalAlignment:
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
             'hidden': {'unique_id': 'UNIQUE_ID'},
-            'optional': {'attention_backend': (BACKENDS, {'default': BACKENDS[4], 'tooltip':'Sage fused is the default: one SageAttention Triton pass with the temporal bias inside the kernel. It falls back to sage partitions, then flash partitions, when Triton/SageAttention are missing or fail. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation. Sage partitions keep the same exact bias with SageAttention kernels (~2x faster attention than flash partitions).'}),
+            'optional': {'attention_backend': (BACKENDS, {'default': AUTO, 'tooltip':'auto (default): the Kitchen one-pass CUDA kernel when a verified binary exists for this GPU, otherwise sage fused (one SageAttention Triton pass with the bias inside the kernel), then sage partitions, then flash partitions. With Model Sparse Attention (sol-attn) connected, the sol one-pass kernel is used. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation. Sage partitions keep the same exact bias with SageAttention kernels (~2x faster attention than flash partitions).'}),
                 'structure_guidance': ('FLOAT', {'default':1.0,'min':1.0,'max':5.0,'step':0.05,
                     'tooltip':'Experimental structure CFG (SolarRenderer): output + (w-1)*(output - output without <Video N>). 1 = off; ~1.5 follows the motion video more. Costs one extra model pass per step where active.'}),
                 'structure_sigma_min': ('FLOAT', {'default':0.0,'min':0.0,'max':1.0,'step':0.01,
@@ -358,7 +377,7 @@ class TARAH3TemporalAlignment:
         'to the guider. No Add Guide or VSA. Guide/output must share a 24fps temporal grid. '
         'Does not encode video or load the LoRA. Defaults match training.')
 
-    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=BACKENDS[4], unique_id=None,
+    def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=AUTO, unique_id=None,
               structure_guidance=1.0, structure_sigma_min=0.0, bias_preset='full', bias_block_start=0, bias_block_end=99, bias_sigma_min=0.0):
         if BIAS_PRESETS.get(bias_preset) is not None:
             bias_block_start, bias_block_end, bias_sigma_min = BIAS_PRESETS[bias_preset]
