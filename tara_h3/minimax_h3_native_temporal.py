@@ -96,23 +96,22 @@ def temporal_layout(native, refs, keyframes, video_index=1):
     return result, source, target
 
 
-def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False, sparse_patch=None, dense_backend=None, reference_biases=None, blocks=(0, 10**6)):
+def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_first=False, sparse_patch=None, dense_backend=None, reference_biases=None, blocks=(0, 10**6), failed=None):
     first=[log_first]
-    sage_ok=[backend in (BACKENDS[3], BACKENDS[4])]
-    fused_ok=[backend == BACKENDS[4] and fused is not None]
+    failed = set() if failed is None else failed
     def partitions(q, k, v, biases=None):
-        if fused_ok[0] and not biases:
+        if backend == BACKENDS[4] and fused is not None and 'fused' not in failed and not biases:
             try:
                 return fused.attention(q,k,v,plan,ctx.strength,ctx.window,ctx.falloff,ctx.cap)
             except RuntimeError as exc:
-                fused_ok[0]=False
+                failed.add('fused')
                 print(f'[TARA-H3] sage fused failed ({exc}); falling back to sage partitions.',flush=True)
         extra = {'reference_biases': biases} if biases else {}
-        if sage_ok[0]:
+        if backend in (BACKENDS[3], BACKENDS[4]) and 'sage' not in failed:
             try:
                 return fast.attention(q,k,v,plan,flash=fast.sage_with_lse,**extra)
             except (ImportError, RuntimeError) as exc:
-                sage_ok[0]=False
+                failed.add('sage')
                 print(f'[TARA-H3] sage partitions failed ({exc}); falling back to flash partitions.',flush=True)
         return fast.attention(q,k,v,plan,**extra)
     def override(original, q, k, v, heads, mask=None, skip_reshape=False, skip_output_reshape=False, **kwargs):
@@ -240,6 +239,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     reference_cache = [None, None, None, None]
     token_cache = [None, None, None, None]
     free_cache = [None, None]
+    failed_backends = set()
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -290,7 +290,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
             if not logged[0]:print('[TARA-H3 token weights] ACTIVE: prompt text-key logit gains, Flash Partitions; visual rows unchanged.',flush=True)
         if float(args['timestep'].flatten()[0]) >= bias_sigma_min:
             to['optimized_attention_override'] = attention_override(ctx,reference_biases=reference_biases, previous=incoming, backend=active_backend, plan=plan_cache[1], log_first=not logged[0], sparse_patch=sparse_patch, dense_backend=dense_backend,
-                                                                    blocks=(bias_block_start, bias_block_end))
+                                                                    blocks=(bias_block_start, bias_block_end), failed=failed_backends)
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
             print(f'[TARA-H3] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)

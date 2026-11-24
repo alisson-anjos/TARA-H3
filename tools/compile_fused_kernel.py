@@ -19,10 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tara_h3'))
 import minimax_h3_temporal_triton as fused  # noqa: E402
 
 SIGNATURE = {
-    'Q': '*i8', 'K': '*i8', 'V': '*fp16', 'Q_scale': '*fp32', 'K_scale': '*fp32', 'Out': '*bf16',
+    'Q': '*i8', 'K': '*i8', 'V': '*fp16', 'Q_scale': '*fp32', 'K_scale': '*fp32', 'Out': '*bf16', 'Times': '*fp32',
     **{name: 'i32' for name in ('stride_qh', 'stride_qn', 'stride_kh', 'stride_kn', 'stride_vh', 'stride_vn', 'stride_oh', 'stride_on',
                                 'qo_len', 'kv_len', 'TA', 'TB', 'SA', 'SB', 'RT', 'RS')},
-    **{name: 'fp32' for name in ('DT', 'WINDOW', 'INV_FALLOFF', 'STRENGTH', 'CAP')},
+    **{name: 'fp32' for name in ('WINDOW', 'INV_FALLOFF', 'STRENGTH', 'CAP')},
     'HEAD_DIM': 'constexpr', 'BLOCK_M': 'constexpr', 'BLOCK_N': 'constexpr',
 }
 CONSTEXPRS = {'HEAD_DIM': 128, 'BLOCK_M': 128, 'BLOCK_N': 64}

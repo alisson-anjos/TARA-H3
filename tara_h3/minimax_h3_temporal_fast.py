@@ -69,10 +69,7 @@ def merge(a,la,b,lb):
     return result.to(a.dtype),total
 
 
-def attention(q,k,v,plan,flash=flash_with_lse,frame_chunk=None,reference_biases=None):
-    if frame_chunk is None:
-        # ~8k target rows per chunk: fewer kernel launches without a large FP32 accumulator.
-        frame_chunk=max(8,8192//plan.target_frame_rows)
+def attention(q,k,v,plan,flash=flash_with_lse,frame_chunk=8,reference_biases=None):
     if q.shape[0]!=1 or q.shape[2]!=k.shape[2] or q.shape!=v.shape:
         raise ValueError('Fast native temporal attention currently requires one packed self-attention sequence')
     if plan.cap==0 and not reference_biases:
