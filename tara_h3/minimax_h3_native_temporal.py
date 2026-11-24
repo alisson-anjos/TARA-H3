@@ -35,6 +35,21 @@ MARKER = 'bfs_h3_native_temporal_v1'
 SOL_BACKEND = 'sol-attn frame bias (experimental)'
 BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)', 'sage partitions', 'sage fused (triton)', 'auto (fastest)']
 AUTO = BACKENDS[5]
+STRENGTH_SCALES = ['fixed', 'auto (reference resolution)']
+# TARA v1.0 was trained at 672x384: a 21x12 grid of 32 px tokens per reference latent frame.
+TRAIN_MOTION_ROWS = 252
+
+
+def effective_strength(strength, rows_per_frame, mode=STRENGTH_SCALES[0]):
+    """auto lowers the bias for reference videos with more tokens per frame than in training (never raises it).
+
+    Measured on MiniMax H3 + TARA v1.0, one 704x1280 clip (880 rows/frame), three seeds: auto (2 -> 1.07)
+    raised timing correlation 0.55 -> 0.67 on one seed and matched fixed strength 2 on the others, with the
+    same identity retention. Opt-in until it is evaluated on more clips.
+    """
+    if mode != STRENGTH_SCALES[1] or rows_per_frame <= TRAIN_MOTION_ROWS:
+        return strength
+    return strength * math.sqrt(TRAIN_MOTION_ROWS / rows_per_frame)
 # bias_preset -> (bias_block_start, bias_block_end, bias_sigma_min); 'custom' reads the three inputs.
 BIAS_PRESETS = {'full': (0, 99, 0.0), 'blocks 0-11 (fast)': (0, 11, 0.0), 'sigma >= 0.90 (fast)': (0, 99, 0.90), 'custom': None}
 
@@ -217,7 +232,8 @@ def structure_guided(real, free, guidance):
 
 
 def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0], telemetry=None,
-                         structure_guidance=1.0, structure_sigma_min=0.0, bias_block_start=0, bias_block_end=10**6, bias_sigma_min=0.0):
+                         structure_guidance=1.0, structure_sigma_min=0.0, bias_block_start=0, bias_block_end=10**6, bias_sigma_min=0.0,
+                         strength_scale=STRENGTH_SCALES[0]):
     if backend not in BACKENDS: raise ValueError("Unknown native temporal attention backend")
     if not math.isfinite(structure_guidance) or structure_guidance < 1.0: raise ValueError('structure_guidance must be >= 1 (1 = off)')
     if backend==BACKENDS[4] and fused is None:
@@ -269,6 +285,8 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         if cache[0] is not native:
             cache[:] = [native, temporal_layout(native, payload.get('refs', []), payload.get('keyframes'), video_index)]
         layout, source, target = cache[1]
+        frames = torch.unique_consecutive(layout.position_ids[source, 0]).numel()
+        bias_strength = effective_strength(strength, int(source.sum()) // max(frames, 1), strength_scale)
         device = args['input'][0].device if isinstance(args['input'], (list, tuple)) else args['input'].device
         to = dict(conds.get('transformer_options', {}))
         incoming = to.get('optimized_attention_override')
@@ -282,10 +300,10 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         to = sparse_compat.without_owned_blocks(to, sparse_patch)
         times = layout.position_ids[:, 0].float()[None].to(device)/40.0
         ctx = core.TemporalContext(times, source[None].to(device), target[None].to(device),
-                                  torch.ones_like(source[None], device=device), strength, window, falloff, cap,
-                                  torch.tensor([strength,window,falloff,cap],device=device,dtype=torch.float32))
+                                  torch.ones_like(source[None], device=device), bias_strength, window, falloff, cap,
+                                  torch.tensor([bias_strength,window,falloff,cap],device=device,dtype=torch.float32))
         if plan_cache[0] is not layout:
-            plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,strength,window,falloff,cap)]
+            plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,bias_strength,window,falloff,cap)]
         reference_biases=None
         controls=to.get(binding.OPTION)
         if controls:
@@ -312,7 +330,9 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
                                                                     blocks=(bias_block_start, bias_block_end), failed=failed_backends)
         copied = dict(args, c=dict(conds, minimax_payload=dict(payload, layout=layout), transformer_options=to))
         if not logged[0]:
-            print(f'[TARA-H3] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={strength} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
+            rows = int(source.sum()) // max(frames, 1)
+            scale_note = f' (auto from {strength:g}: {rows} reference rows/frame, {TRAIN_MOTION_ROWS} in training)' if bias_strength != strength else ''
+            print(f'[TARA-H3] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={bias_strength:.2f}{scale_note} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
             if sparse_patch is not None:
                 print('[TARA-H3] sol-attn uses the native one-pass extension when installed; otherwise frame-wise compatibility repeats work. Watch for Kitchen ONE-PASS sol kernel ACTIVE.', flush=True)
             logged[0] = True
@@ -361,6 +381,8 @@ class TARAH3TemporalAlignment:
                     'tooltip':'Experimental structure CFG (SolarRenderer): output + (w-1)*(output - output without <Video N>). 1 = off; ~1.5 follows the motion video more. Costs one extra model pass per step where active.'}),
                 'structure_sigma_min': ('FLOAT', {'default':0.0,'min':0.0,'max':1.0,'step':0.01,
                     'tooltip':'Structure guidance only at noise levels >= this (structure is laid down at high noise); lower-noise steps skip the extra pass.'}),
+                'strength_scale': (STRENGTH_SCALES, {'default': STRENGTH_SCALES[0],
+                    'tooltip':'fixed (default): use strength as given. auto: when the reference video has more tokens per frame than in training (672x384), lower the bias as strength*sqrt(252/rows), e.g. 2.0 -> 1.07 for a 704x1280 reference; never raises it. Try auto for references above ~0.4 MP.'}),
                 'bias_preset': (list(BIAS_PRESETS), {'default': 'full',
                     'tooltip':'Where the temporal bias is applied. full = every block and step (training default). blocks 0-11 = early blocks only, other blocks run native attention. sigma >= 0.90 = high-noise steps only. custom = bias_block_start/end and bias_sigma_min below.'}),
                 'bias_block_start': ('INT', {'default':0,'min':0,'max':99,
@@ -378,7 +400,7 @@ class TARAH3TemporalAlignment:
         'Does not encode video or load the LoRA. Defaults match training.')
 
     def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=AUTO, unique_id=None,
-              structure_guidance=1.0, structure_sigma_min=0.0, bias_preset='full', bias_block_start=0, bias_block_end=99, bias_sigma_min=0.0):
+              structure_guidance=1.0, structure_sigma_min=0.0, strength_scale=STRENGTH_SCALES[0], bias_preset='full', bias_block_start=0, bias_block_end=99, bias_sigma_min=0.0):
         if BIAS_PRESETS.get(bias_preset) is not None:
             bias_block_start, bias_block_end, bias_sigma_min = BIAS_PRESETS[bias_preset]
         def report(data):
@@ -391,7 +413,8 @@ class TARAH3TemporalAlignment:
         return (patch_temporal_model(model,motion_video_index,strength,window_seconds,falloff_seconds,max_penalty,attention_backend,
                                      telemetry=report if unique_id is not None else None,
                                      structure_guidance=structure_guidance, structure_sigma_min=structure_sigma_min,
-                                     bias_block_start=bias_block_start, bias_block_end=bias_block_end, bias_sigma_min=bias_sigma_min),)
+                                     bias_block_start=bias_block_start, bias_block_end=bias_block_end, bias_sigma_min=bias_sigma_min,
+                                     strength_scale=strength_scale),)
 
 NODE_CLASS_MAPPINGS = {'TARAH3TemporalAlignment': TARAH3TemporalAlignment}
 NODE_DISPLAY_NAME_MAPPINGS = {'TARAH3TemporalAlignment': 'TARA-H3 Temporal Alignment'}

@@ -21,6 +21,17 @@ jobs:
       - name: Unit tests
         run: python -m pytest -q tests
 
+  python-310:
+    # ComfyUI still runs on Python 3.10/3.11 in many installs: every module must at least parse there.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Byte-compile on Python 3.10
+        run: python -m compileall -q tara_h3 __init__.py tools tests
+
   fused-kernel:
     # Ahead-of-time compiles the sage fused Triton kernel for every supported GPU architecture; no GPU needed.
     runs-on: ubuntu-22.04

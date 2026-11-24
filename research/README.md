@@ -202,6 +202,14 @@ Repeating one configuration with quantized kernels gives 25–28 dB, so the exac
 - **Clock alignment and bias are both needed with the trained LoRA.** With strength 0 (clock alignment only), the reference video's appearance bleeds into the output (ghosted overlays). Without the TARA node at all (sol-attn only), the output no longer follows the reference video's framing and setting.
 - **The LoRA is needed for character replacement.** Without the TARA LoRA, the base Ref2VA model reproduces the reference video's subject in this setup, with or without TARA. TARA aligns time; the LoRA learns to take timing from the reference video and identity from the pictures. We therefore do not claim a training-free method for this task.
 
+### 4.6 Temporal following, resolution and clip length (v0.2.0)
+
+We measure temporal following with appearance-independent signals: per-frame head yaw/pitch/roll and mouth opening (insightface 3D-68) and mean optical-flow magnitude, correlated with the reference video at the best lag in ±8 frames; and identity with ArcFace similarity to the target picture and to the reference-video person, per third of the clip. Timing correlation alone rewards copying the reference, so both are reported. These are single clips and up to three seeds; they indicate where to evaluate, not population-level effects.
+
+- **Short clips (107 frames, 416×736).** Close-up: TARA head-yaw correlation 0.53–0.57 versus 0.35 without the bias, which also lagged by about 7 frames. Seven wide scenes (full body, two people, moving camera, back views, 90 frames): motion-flow correlation was similar with and without the bias (0.45–0.99 depending on the scene); with two people, the run without the bias replaced both in one scene, TARA only the main performer.
+- **Dense references (124 frames, 704×1280 reference and output).** Strength 2 lowered timing correlation on one seed (0.55 versus 0.74 without the bias, which however copied the reference person's sunglasses and face); strength 1.0/0.5 (0.68) or a 416×736 reference with the 720p output (0.64–0.65) tracked the timing without the leak. Scaling the strength by √(252 / rows per frame) (2 → 1.07) improved one of three seeds (0.55 → 0.67) and matched strength 2 on the other two.
+- **Long clips (243 frames, 10 s, 416×736).** On a close-up, the run without the bias kept the picture identity for two thirds and then reproduced the reference person (ArcFace to the picture 0.70 → 0.60 → 0.07, to the reference person 0.10 → 0.13 → 0.66). With TARA identity held (0.72 → 0.65 → 0.67; reference 0.08–0.11), but in the last third the output turned away from the reference performance. Full-body dance and two-person clips kept identity in both settings.
+
 ## 5. Reproduction
 
 ### Training and preview inference

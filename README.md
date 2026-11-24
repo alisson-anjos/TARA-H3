@@ -69,6 +69,12 @@ Two runs of the same configuration differ by about 25–28 dB PSNR (quantized ke
 
 Without the TARA LoRA, the base Ref2VA model reproduces the reference video's content in this character-replacement setup, with or without TARA. TARA aligns time; the LoRA learns to use the reference video for timing while taking identity from the pictures.
 
+## Recommendations from the measurements
+
+- **Reference resolution matters more than output resolution.** The LoRA was trained with 672x384 reference videos (252 tokens per latent frame). At 720p with a 704x1280 reference, strength 2 lost the reference timing on some seeds; a 416x736 reference with a 720p output, or strength 0.5–1.0, tracked it without leaking the reference person's appearance. `strength_scale = auto` lowers the strength for dense references (2 → 1.07 at 704x1280); it is opt-in until evaluated on more clips.
+- **Long clips are where the bias matters most.** On a 10 s close-up (243 frames), the run without the bias drifted into copying the reference person in the last third (ArcFace to the picture 0.07, to the reference person 0.66); with TARA identity held (0.67 / 0.08). On short or wide shots both followed timing similarly. Beyond the 4.5 s training length the output can still wander from the reference scene, so prefer clips close to the training length or windowed generation.
+- `sigma >= 0.90` is a good speed preset at the training resolution, but not for dense references.
+
 ## Install
 
 ```bash
