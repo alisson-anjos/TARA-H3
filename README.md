@@ -9,13 +9,15 @@ TARA-H3 lets the generated video follow a reference video *in time* while keepin
 
 It adds no learned layers. Use it with a LoRA trained with the same policy; see [Training](#training).
 
+> **TARA is not a specific LoRA.** It is a generic mechanism for time-aligning a reference video with the generated video. The examples and measurements in this repository use one LoRA trained with it, *Motion Transfer TARA v1.0* (replace the performer of the reference video with the subject of a picture). Its results reflect that task and that training run (data, length, resolution, steps), not limits of TARA itself; a differently or better trained LoRA can behave differently, and a poorly trained one will look worse with or without TARA. For example, the drift on 10 s clips reflects a LoRA trained only on 4.5 s clips. The same training code can train any task where the output should follow a reference video in time (motion transfer, character or object replacement, restyling, relighting, effects, ...).
+
 The full method, equations, numerical checks and limitations are in the technical report: [research/README.md](research/README.md).
 
 ## Example
 
 ![reference video, native MiniMax H3, TARA](docs/media/tara_vs_native_couple.gif)
 
-Same seed, same LoRA, with and without the TARA node. The native output drifts from the reference's framing and timing; with TARA the performers follow the reference frame by frame (body-pose correlation 0.49 → 0.98). This clip is one of 15; across all of them (3 seeds each) TARA raised motion following from 0.45 to 0.80 on close-ups and from 0.83 to 0.97 on wider shots — see [research/README.md §4.7](research/README.md). [MP4](docs/media/tara_vs_native_couple.mp4)
+Motion Transfer TARA v1.0 LoRA (one LoRA trained with TARA, not TARA itself); same seed and LoRA, with and without the TARA node. The native output drifts from the reference's framing and timing; with TARA the performers follow the reference frame by frame (body-pose correlation 0.49 → 0.98). This clip is one of 15; across all of them (3 seeds each) TARA raised motion following from 0.45 to 0.80 on close-ups and from 0.83 to 0.97 on wider shots — see [research/README.md §4.7](research/README.md). [MP4](docs/media/tara_vs_native_couple.mp4)
 
 ## Nodes
 
