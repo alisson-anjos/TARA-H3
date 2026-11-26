@@ -21,7 +21,7 @@ import minimax_h3_temporal_triton as fused  # noqa: E402
 SIGNATURE = {
     'Q': '*i8', 'K': '*i8', 'V': '*fp16', 'Q_scale': '*fp32', 'K_scale': '*fp32', 'Out': '*bf16', 'Times': '*fp32',
     **{name: 'i32' for name in ('stride_qh', 'stride_qn', 'stride_kh', 'stride_kn', 'stride_vh', 'stride_vn', 'stride_oh', 'stride_on',
-                                'qo_len', 'kv_len', 'TA', 'TB', 'SA', 'SB', 'RT', 'RS')},
+                                'qo_len', 'kv_len', 'TA', 'TB', 'SA', 'SB')},
     **{name: 'fp32' for name in ('WINDOW', 'INV_FALLOFF', 'STRENGTH', 'CAP')},
     'HEAD_DIM': 'constexpr', 'BLOCK_M': 'constexpr', 'BLOCK_N': 'constexpr',
 }
