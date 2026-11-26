@@ -4,7 +4,8 @@ Derived from SageAttention (Apache-2.0, https://github.com/thu-ml/SageAttention,
 triton/attn_qk_int8_per_block.py). The key loop is split at the motion-video rows:
 keys before and after it run the unmodified Sage loop; motion keys of target-query
 tiles add the TARA penalty, computed in registers from each latent frame's time.
-Same bias as the partition backends, one pass.
+Same bias as the partition backends, one pass. Times are read per packed row, so the motion video may have any
+number of rows per frame (reference_token_drop).
 """
 import torch
 import triton
@@ -16,7 +17,7 @@ LOG2E = 1.44269504
 
 @triton.jit
 def _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_vn, lo, hi,
-           q_time, q_target, Times, SA, SB, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+           q_time, q_target, Times, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
            BIAS: tl.constexpr, HEAD_DIM: tl.constexpr, BLOCK_N: tl.constexpr):
     offs_n = tl.arange(0, BLOCK_N)
     offs_k = tl.arange(0, HEAD_DIM)
@@ -33,7 +34,7 @@ def _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_v
         if BIAS:
             cols = start_n + offs_n
             k_source = (cols >= SA) & (cols < SB)
-            k_time = tl.load(Times + tl.where(k_source, (cols - SA) // RS, 0))
+            k_time = tl.load(Times + tl.where(k_source, cols, 0))
             gap = tl.maximum(tl.abs(q_time[:, None] - k_time[None, :]) - WINDOW, 0.0) * INV_FALLOFF
             penalty = tl.minimum(STRENGTH * gap * gap, CAP)
             qk -= tl.where(q_target[:, None] & k_source[None, :], penalty * 1.44269504, 0.0)
@@ -56,7 +57,7 @@ def _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_v
 @triton.jit
 def _tara_fwd(Q, K, V, Q_scale, K_scale, Out, Times,
               stride_qh, stride_qn, stride_kh, stride_kn, stride_vh, stride_vn, stride_oh, stride_on,
-              qo_len, kv_len, TA, TB, SA, SB, RT, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+              qo_len, kv_len, TA, TB, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
               HEAD_DIM: tl.constexpr, BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr):
     start_m = tl.program_id(0)
     off_h = tl.program_id(1).to(tl.int64)
@@ -72,37 +73,52 @@ def _tara_fwd(Q, K, V, Q_scale, K_scale, Out, Times,
     l_i = tl.zeros([BLOCK_M], dtype=tl.float32) + 1.0
     acc = tl.zeros([BLOCK_M, HEAD_DIM], dtype=tl.float32)
     q_target = (offs_m >= TA) & (offs_m < TB)
-    q_time = tl.load(Times + tl.where(q_target, (offs_m - TA) // RT, 0))
+    q_time = tl.load(Times + tl.where(q_target, offs_m, 0))
 
     lo = (SA // BLOCK_N) * BLOCK_N
     hi = tl.cdiv(SB, BLOCK_N) * BLOCK_N
     acc, l_i, m_i = _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_vn, 0, lo,
-                           q_time, q_target, Times, SA, SB, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+                           q_time, q_target, Times, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
                            False, HEAD_DIM, BLOCK_N)
     if (start_m * BLOCK_M + BLOCK_M > TA) & (start_m * BLOCK_M < TB):
         acc, l_i, m_i = _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_vn, lo, hi,
-                               q_time, q_target, Times, SA, SB, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+                               q_time, q_target, Times, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
                                True, HEAD_DIM, BLOCK_N)
     else:
         acc, l_i, m_i = _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_vn, lo, hi,
-                               q_time, q_target, Times, SA, SB, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+                               q_time, q_target, Times, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
                                False, HEAD_DIM, BLOCK_N)
     acc, l_i, m_i = _inner(acc, l_i, m_i, q, q_scale, kv_len, K, V, K_scale, stride_kn, stride_vn, hi, kv_len,
-                           q_time, q_target, Times, SA, SB, RS, WINDOW, INV_FALLOFF, STRENGTH, CAP,
+                           q_time, q_target, Times, SA, SB, WINDOW, INV_FALLOFF, STRENGTH, CAP,
                            False, HEAD_DIM, BLOCK_N)
     acc = acc / l_i[:, None]
     O_ptrs = Out + off_h * stride_oh + offs_m[:, None] * stride_on + offs_k[None, :]
     tl.store(O_ptrs, acc.to(Out.type.element_ty), mask=offs_m[:, None] < qo_len)
 
 
+def row_times(plan, n, device):
+    """Seconds per packed row for the plan's motion and target rows (fixed rows per frame); 0 elsewhere."""
+    times = getattr(plan, '_fused_row_times', None)
+    if times is None or times.device != device or times.numel() != n:
+        frame = torch.tensor(plan.frame_times, dtype=torch.float32)
+        times = torch.zeros(n, dtype=torch.float32)
+        times[plan.source_start:plan.source_stop] = frame.repeat_interleave(plan.source_frame_rows)
+        times[plan.target_start:plan.target_stop] = frame.repeat_interleave(plan.target_frame_rows)
+        times = plan._fused_row_times = times.to(device)
+    return times
+
+
 def attention(q, k, v, plan, strength, window, falloff, cap):
     """q, k, v: [1, heads, seq, 128] (HND). Same contract as fast.attention without reference biases."""
+    times = row_times(plan, q.shape[2], q.device)
+    return attention_rows(q, k, v, times, plan.source_start, plan.source_stop, plan.target_start, plan.target_stop,
+                          strength, window, falloff, cap)
+
+
+def attention_rows(q, k, v, times, sa, sb, ta, tb, strength, window, falloff, cap):
+    """Rows sa:sb are motion keys, ta:tb target queries; times [seq] float32 seconds on q's device."""
     if q.shape[0] != 1 or q.shape[-1] != 128 or q.shape != k.shape or q.shape != v.shape:
         raise RuntimeError('TARA one-pass kernel needs one packed sequence with head dim 128')
-    times = getattr(plan, '_fused_times', None)
-    if times is None or times.device != q.device:
-        # Seconds per latent frame (H3's first latent frame is shorter); target and motion share this clock.
-        times = plan._fused_times = torch.tensor(plan.frame_times, dtype=torch.float32, device=q.device)
     k = k.contiguous()
     q_int8, q_scale, k_int8, k_scale = per_block_int8(q.contiguous(), k, km=k.mean(dim=2, keepdim=True),
                                                       sm_scale=q.shape[-1] ** -0.5, tensor_layout="HND")
@@ -113,8 +129,7 @@ def attention(q, k, v, plan, strength, window, falloff, cap):
     _tara_fwd[grid](q_int8, k_int8, v, q_scale, k_scale, o, times,
                     q_int8.stride(1), q_int8.stride(2), k_int8.stride(1), k_int8.stride(2),
                     v.stride(1), v.stride(2), o.stride(1), o.stride(2),
-                    n, n, plan.target_start, plan.target_stop, plan.source_start, plan.source_stop,
-                    plan.target_frame_rows, plan.source_frame_rows,
+                    n, n, ta, tb, sa, sb,
                     float(window), 1.0 / float(falloff), float(strength), float(cap),
                     HEAD_DIM=128, BLOCK_M=128, BLOCK_N=64, num_warps=8, num_stages=2)
     return o

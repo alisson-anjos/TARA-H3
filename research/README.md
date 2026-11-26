@@ -1,6 +1,6 @@
 # TARA-H3: Temporally Aligned Reference Attention for Native Video Conditioning
 
-**Alisson Anjos** · Technical report v0.2.1 · November 24, 2026  
+**Alisson Anjos** · Technical report v0.3.0 · November 26, 2026  
 **Status:** experimental implementation and preliminary evidence; not peer reviewed.
 
 ## Abstract
@@ -150,6 +150,12 @@ This is a single attention pass with no partitions and no FP32 merges. It needs 
 
 The bias can also be restricted in time or depth: only at noise levels σ ≥ σ_min (later steps run native attention), or only in a block range. These are inference-time approximations of the trained policy and are evaluated in Section 4.4.
 
+### 3.8 Reference token drop and per-row times (v0.3.0)
+
+Following CodecOPSD [Wang et al., arXiv 2611.31184], motion-reference tokens that are predictable from the previous frame can be removed from the packed sequence. TARA-H3's implementation is independent of theirs: per 16×16 luma block, the best match in the previous pixel frame within ±8 px gives a motion length and a mean residual (a block whose zero-motion difference is below 1/255 counts as a skip); latent frame 0 uses the distance from a local blur. A token (32×32 px over the pixel frames of one latent frame) takes the maximum motion and the maximum over frames of its mean residual, and the drop keeps the top share by rank(residual)·(1 + rank(motion)). Latent frame 0 is always kept, as the only complete view of the static scene. The model embeds the full layout and gathers the kept rows, so every kept token keeps its original RoPE position and the clock alignment of §2.2 is unchanged.
+
+After the drop a motion frame no longer has a fixed number of rows, which the partition and one-pass kernels assume. Two exact paths remove that assumption. (i) The Sage Fused kernel (§3.6) now reads a time per packed row instead of deriving it from a fixed rows-per-frame grid; without a drop it produces the same output at the same speed. (ii) *Flash augmented*: since the bias depends only on the query's and the key's frames, it factors through extra head dimensions — a target query appends a one-hot of its frame, a motion key appends its bias column divided by the softmax scale, all other rows append zeros — so one ordinary FlashAttention call with the original scale computes q·k/√d + B(frame_q, frame_k). It is exact up to BF16 rounding of the bias but 2.5× slower than (i) at 243 frames, and serves as the fallback.
+
 ## 4. Preliminary evidence
 
 ### 4.1 Numerical checks
@@ -226,6 +232,19 @@ All measurements in this report use one LoRA trained with TARA, Motion Transfer 
 
 Aligning the reference video's temporal RoPE clock with the output's makes the output follow the reference performance in every category, removes the native setting's lag, keeps it from fading over 10 s clips, and sharply reduces the spread across seeds and clips. The bounded bias adds little on top of the aligned clock in these measurements (a slightly higher, less variable head-yaw correlation on close-ups), so clock-only TARA, which runs at native attention speed on any backend, captures most of the benefit. Limitations: one 10 s close-up seed left the reference performance with the bias and another reproduced the reference person without it (the 10 s clips are 2.3× the training length); identity and which subjects get replaced are outside these measures (an earlier identity analysis, v1, was withdrawn because its largest-face metric rewarded duplicated identities).
 
+### 4.8 Reference token drop (5 clips × 3 seeds, v0.3.0)
+
+Same protocol as §4.7 on five of its clips (one close-up with cuts, two 90-frame wide shots, two 243-frame wide shots), with 0 / 50 / 70 % of the motion video's tokens dropped, for clock-only and full TARA. Full tables, per-render data and side-by-side videos: [`eval/results/token_drop_summary.md`](eval/results/token_drop_summary.md).
+
+| Full TARA | no drop | 50 % drop | 70 % drop |
+|---|---:|---:|---:|
+| s/step, 107 frames (close-up) | 3.81 | 2.95 | 2.56 |
+| s/step, 243 frames (wide) | 12.1 | 9.1 | 7.5 |
+| Body pose, 4 wide clips (native H3: 0.48–0.90) | 0.93–0.98 | 0.92–0.98 | 0.93–0.98 |
+| Face motion, close-up with cuts (native H3: 0.24) | 0.72 | 0.67 | 0.63 |
+
+Dropping half of the motion tokens keeps the temporal alignment: body-pose following is unchanged at 50 % and 70 %, and every dropped variant follows the reference far better than native H3. Fine face motion loses about 0.05 at 50 % and up to 0.1 at 70 %, consistent with small mouth and eye motion inside 32×32 px tokens being scored as predictable. Unlike CodecOPSD, no distillation is used; a self-distilled LoRA for the dropped sequence is left for future work.
+
 ## 5. Reproduction
 
 ### Training and preview inference
@@ -288,8 +307,8 @@ This document is an openly available **technical report/software artifact**, not
   year = {2026},
   institution = {Independent research},
   type = {Technical report},
-  number = {v0.2.1},
-  url = {https://github.com/alisson-anjos/TARA-H3/tree/v0.2.1/research},
+  number = {v0.3.0},
+  url = {https://github.com/alisson-anjos/TARA-H3/tree/v0.3.0/research},
   note = {Experimental implementation; not peer reviewed}
 }
 ```
@@ -301,10 +320,12 @@ This document is an openly available **technical report/software artifact**, not
 - Su et al., [RoFormer: Enhanced Transformer with Rotary Position Embedding](https://arxiv.org/abs/2104.09864).
 - Dao et al., [FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness](https://arxiv.org/abs/2205.14135).
 - [PyTorch FlexAttention documentation](https://docs.pytorch.org/docs/stable/nn.attention.flex_attention.html).
+- Wang et al., [CodecOPSD](https://arxiv.org/abs/2611.31184) (codec-guided token pruning with on-policy self-distillation); only the idea is used, the implementation is independent.
 - [Comfy Kitchen upstream](https://github.com/Comfy-Org/comfy-kitchen); [our optional temporal extension](https://github.com/alisson-anjos/comfy-kitchen/tree/feat/h3-native-temporal). Sol-specific provenance and notices accompany the kernel source.
 
 ## Version history
 
+- **v0.3.0 — 2026-11-26:** Codec-style reference token drop; Sage Fused with per-row times and the flash-augmented exact one-pass path (§3.8); evaluation on 5 clips × 3 seeds (§4.8).
 - **v0.2.1 — 2026-11-24:** Evaluation of motion following against native MiniMax H3 on 15 clips × 3 seeds with face-motion and DWPose body-pose measures (Section 4.7); the v1 identity analysis was withdrawn because its largest-face metric rewarded duplicated identities.
 - **v0.2.0 — 2026-11-24:** Sage Partitions, Sage Fused (Triton) and automatic backend selection; bias scheduling by noise level and block range; end-to-end sampling cost and fidelity on one clip (Section 4.4); ablations on clock alignment, bias and the LoRA (Section 4.5); report moved to the TARA-H3 repository.
 - **v0.1.0 — 2026-10-23:** Initial implementation-oriented report, equations, diagrams, numerical evidence, isolated timing data, reproduction pointers, and limitations.

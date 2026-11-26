@@ -64,6 +64,9 @@ def graph(clip, variant, seed, picture, prompt, models, prefix):
         "20": {"class_type": "CreateVideo", "inputs": {"fps": 24.0, "images": ["19", 0]}},
         "21": {"class_type": "SaveVideo", "inputs": {"filename_prefix": prefix, "format": "auto", "codec": "auto", "video": ["20", 0]}},
     }
+    if variant.get("reference_token_drop", 0) > 0:
+        # Codec-style pruning of the motion video's tokens needs the same frames that go into Reference to Video.
+        g["5"]["inputs"]["reference_frames"] = ["10", 0]
     if variant.get("native"):
         # Baseline: MiniMax H3 native reference conditioning, no TARA node (no clock alignment, no bias).
         del g["5"]

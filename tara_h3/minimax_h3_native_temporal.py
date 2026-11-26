@@ -15,6 +15,8 @@ try:
     from . import minimax_h3_temporal_kitchen as kitchen
     from . import minimax_h3_temporal_sol as sol
     from . import minimax_h3_sparse_compat as sparse_compat
+    from . import minimax_h3_token_drop as token_drop
+    from . import minimax_h3_temporal_augmented as augmented
 except ImportError:
     import minimax_h3_reference_binding as binding
     import minimax_h3_token_weights as token_weights
@@ -23,6 +25,8 @@ except ImportError:
     import minimax_h3_temporal_kitchen as kitchen
     import minimax_h3_temporal_sol as sol
     import minimax_h3_sparse_compat as sparse_compat
+    import minimax_h3_token_drop as token_drop
+    import minimax_h3_temporal_augmented as augmented
 try:
     from . import minimax_h3_temporal_triton as fused
 except ImportError:
@@ -33,7 +37,8 @@ except ImportError:
 
 MARKER = 'bfs_h3_native_temporal_v1'
 SOL_BACKEND = 'sol-attn frame bias (experimental)'
-BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)', 'sage partitions', 'sage fused (triton)', 'auto (fastest)']
+BACKENDS = ['flash partitions (no compile)', 'flex (original)', 'comfy kitchen (experimental)', 'sage partitions', 'sage fused (triton)', 'auto (fastest)', 'flash augmented (one pass)']
+AUGMENTED = BACKENDS[6]
 AUTO = BACKENDS[5]
 STRENGTH_SCALES = ['fixed', 'auto (reference resolution)']
 # TARA v1.0 was trained at 672x384: a 21x12 grid of 32 px tokens per reference latent frame.
@@ -170,11 +175,25 @@ def attention_override(ctx, previous=None, backend=BACKENDS[1], plan=None, log_f
                 display_backend='sol-attn one-pass (native Kitchen)' if chosen==SOL_BACKEND else 'comfy kitchen one-pass (native)'
             elif chosen==AUTO:
                 display_backend='auto: sage fused (no Kitchen one-pass binary for this GPU)'
+            elif chosen==AUGMENTED and getattr(plan, 'prefer_fused', False) and fused is not None:
+                display_backend='sage fused, per-row times (token drop)'
             print(f'[TARA-H3] first attention starting: backend={display_backend}, Q={tuple(q.shape)}, dtype={q.dtype}',flush=True)
             if q.is_cuda: torch.cuda.synchronize(q.device)
             started=time.perf_counter()
         if reference_biases:
             out = partitions(q,k,v,reference_biases)
+        elif chosen == AUGMENTED:
+            out = None
+            if (fused is not None and getattr(plan, 'prefer_fused', False) and 'fused_rows' not in failed
+                    and q.shape[-1] == 128):
+                try:
+                    times, sa, sb, ta, tb = plan.rows(q.device)
+                    out = fused.attention_rows(q,k,v,times,sa,sb,ta,tb,ctx.strength,ctx.window,ctx.falloff,ctx.cap)
+                except (ImportError, RuntimeError) as exc:
+                    failed.add('fused_rows')
+                    print(f'[TARA-H3] sage fused (per-row) failed ({exc}); using flash augmented.',flush=True)
+            if out is None:
+                out = augmented.attention(q,k,v,plan)
         elif chosen == SOL_BACKEND:
             if not getattr(plan, '_sol_active_logged', False):
                 passes = 1 if sol.native_kernel.api_for(q) is not None else (plan.frames+1 if ctx.strength and ctx.cap else 1)
@@ -233,7 +252,10 @@ def structure_guided(real, free, guidance):
 
 def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff=0.25, cap=6.0, backend=BACKENDS[0], telemetry=None,
                          structure_guidance=1.0, structure_sigma_min=0.0, bias_block_start=0, bias_block_end=10**6, bias_sigma_min=0.0,
-                         strength_scale=STRENGTH_SCALES[0]):
+                         strength_scale=STRENGTH_SCALES[0], token_drop_share=0.0, reference_frames=None):
+    if not 0.0 <= token_drop_share < 1.0: raise ValueError('reference_token_drop must be in [0, 1)')
+    if token_drop_share > 0 and reference_frames is None:
+        raise ValueError('reference_token_drop needs reference_frames: connect the same frames that go into Reference to Video as <Video N>.')
     if backend not in BACKENDS: raise ValueError("Unknown native temporal attention backend")
     if not math.isfinite(structure_guidance) or structure_guidance < 1.0: raise ValueError('structure_guidance must be >= 1 (1 = off)')
     if backend==BACKENDS[4] and fused is None:
@@ -274,7 +296,28 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
     reference_cache = [None, None, None, None]
     token_cache = [None, None, None, None]
     free_cache = [None, None]
+    drop_cache = [None, None]
     failed_backends = set()
+    if token_drop_share > 0:
+        token_drop.install_gather(net)
+
+    def pruned(native, payload, layout, source, target, device):
+        refs, videos = payload.get('refs', []), 0
+        blk = None
+        for ref in refs:
+            if ref['kind'] in ('video', 'video_audio'):
+                videos += 1
+                if videos == video_index:
+                    blk = ref
+        keep_src = token_drop.keep_mask(reference_frames.to(device), blk['latent_t'], blk['latent_h']//2, blk['latent_w']//2, token_drop_share)
+        if keep_src.numel() != int(source.sum()):
+            raise RuntimeError('reference token drop: mask size does not match the motion rows')
+        keep = torch.ones(layout.seq_len, dtype=torch.bool)
+        src_idx = torch.nonzero(source).flatten()
+        keep[src_idx[~keep_src]] = False
+        print(f'[TARA-H3] reference token drop: kept {int(keep_src.sum())}/{keep_src.numel()} motion rows '
+              f'({100*(1-keep_src.float().mean()):.0f}% dropped); packed rows {layout.seq_len} -> {int(keep.sum())}', flush=True)
+        return token_drop.prune_layout(layout, keep), source[keep], target[keep]
 
     def wrapper(model_function, args):
         conds = args.get('c', {})
@@ -285,6 +328,12 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         if cache[0] is not native:
             cache[:] = [native, temporal_layout(native, payload.get('refs', []), payload.get('keyframes'), video_index)]
         layout, source, target = cache[1]
+        dropping = token_drop_share > 0
+        if dropping:
+            if drop_cache[0] is not native:
+                dev = args['input'][0].device if isinstance(args['input'], (list, tuple)) else args['input'].device
+                drop_cache[:] = [native, pruned(native, payload, layout, source, target, dev)]
+            layout, source, target = drop_cache[1]
         frames = torch.unique_consecutive(layout.position_ids[source, 0]).numel()
         bias_strength = effective_strength(strength, int(source.sum()) // max(frames, 1), strength_scale)
         device = args['input'][0].device if isinstance(args['input'], (list, tuple)) else args['input'].device
@@ -302,8 +351,25 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         ctx = core.TemporalContext(times, source[None].to(device), target[None].to(device),
                                   torch.ones_like(source[None], device=device), bias_strength, window, falloff, cap,
                                   torch.tensor([bias_strength,window,falloff,cap],device=device,dtype=torch.float32))
-        if plan_cache[0] is not layout:
+        if dropping:
+            # Pruned motion rows: no fixed grid per frame, so the partition kernels do not apply. The bias (if any)
+            # runs as one augmented-head-dim FlashAttention pass; strength 0 keeps the selected backend.
+            if bias_strength and cap:
+                active_backend = AUGMENTED
+            if plan_cache[0] is not layout:
+                plan_cache[:] = [layout, None]
+            if to.get(binding.OPTION) or to.get(token_weights.OPTION) or sparse_patch is not None:
+                raise ValueError('reference_token_drop does not support Reference Binding, Token Weights or sparse attention yet.')
+        elif active_backend == AUGMENTED:
+            if plan_cache[0] is not layout:
+                plan_cache[:] = [layout, None]
+        elif plan_cache[0] is not layout:
             plan_cache[:] = [layout, fast.make_plan(layout.position_ids,source,target,bias_strength,window,falloff,cap)]
+        if active_backend == AUGMENTED and not isinstance(plan_cache[1], augmented.LazyPlan):
+            plan_cache[1] = augmented.LazyPlan(layout.position_ids[:, 0].float()/40.0, source, target, bias_strength,
+                                               window, falloff, cap)
+            # With token drop and a fast backend selected, prefer the per-row Sage fused kernel (INT8, one pass).
+            plan_cache[1].prefer_fused = dropping and backend in (AUTO, BACKENDS[3], BACKENDS[4])
         reference_biases=None
         controls=to.get(binding.OPTION)
         if controls:
@@ -332,7 +398,7 @@ def patch_temporal_model(model, video_index=1, strength=2.0, window=0.2, falloff
         if not logged[0]:
             rows = int(source.sum()) // max(frames, 1)
             scale_note = f' (auto from {strength:g}: {rows} reference rows/frame, {TRAIN_MOTION_ROWS} in training)' if bias_strength != strength else ''
-            print(f'[TARA-H3] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={bias_strength:.2f}{scale_note} cap={cap}; images remain native; Add Guide OFF; backend={active_backend}; packed_rows={layout.seq_len}', flush=True)
+            print(f'[TARA-H3] {core.VERSION}: <Video {video_index}>, {int(source.sum())} motion rows; temporal RoPE aligned; soft window={window}s strength={bias_strength:.2f}{scale_note} cap={cap}; images remain native; Add Guide OFF; backend={"sage fused, per-row times (token drop)" if getattr(plan_cache[1], "prefer_fused", False) and fused is not None else active_backend}; packed_rows={layout.seq_len}', flush=True)
             if sparse_patch is not None:
                 print('[TARA-H3] sol-attn uses the native one-pass extension when installed; otherwise frame-wise compatibility repeats work. Watch for Kitchen ONE-PASS sol kernel ACTIVE.', flush=True)
             logged[0] = True
@@ -376,7 +442,7 @@ class TARAH3TemporalAlignment:
             'falloff_seconds': ('FLOAT', {'default':0.25,'min':0.01,'max':10.0,'step':0.01}),
             'max_penalty': ('FLOAT', {'default':6.0,'min':0.0,'max':30.0,'step':0.1})},
             'hidden': {'unique_id': 'UNIQUE_ID'},
-            'optional': {'attention_backend': (BACKENDS, {'default': AUTO, 'tooltip':'auto (default): the Kitchen one-pass CUDA kernel when a verified binary exists for this GPU, otherwise sage fused (one SageAttention Triton pass with the bias inside the kernel), then sage partitions, then flash partitions. With Model Sparse Attention (sol-attn) connected, the sol one-pass kernel is used. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation. Sage partitions keep the same exact bias with SageAttention kernels (~2x faster attention than flash partitions).'}),
+            'optional': {'attention_backend': (BACKENDS, {'default': AUTO, 'tooltip':'auto (default): the Kitchen one-pass CUDA kernel when a verified binary exists for this GPU, otherwise sage fused (one SageAttention Triton pass with the bias inside the kernel), then sage partitions, then flash partitions. With Model Sparse Attention (sol-attn) connected, the sol one-pass kernel is used. An official Model Attention Backend Kitchen selection is detected automatically. Kitchen uses an optional one-pass temporal extension when installed, otherwise frame-wise compatibility. Flex is the original implementation. Sage partitions keep the same exact bias with SageAttention kernels (~2x faster attention than flash partitions). Flash augmented: one FlashAttention pass with the bias carried in extra head dimensions (frames + 128); works with any tokens per frame and is used automatically with reference_token_drop.'}),
                 'structure_guidance': ('FLOAT', {'default':1.0,'min':1.0,'max':5.0,'step':0.05,
                     'tooltip':'Experimental structure CFG (SolarRenderer): output + (w-1)*(output - output without <Video N>). 1 = off; ~1.5 follows the motion video more. Costs one extra model pass per step where active.'}),
                 'structure_sigma_min': ('FLOAT', {'default':0.0,'min':0.0,'max':1.0,'step':0.01,
@@ -390,7 +456,10 @@ class TARAH3TemporalAlignment:
                 'bias_block_end': ('INT', {'default':99,'min':0,'max':99,
                     'tooltip':'Last transformer block that receives the temporal bias (H3 has 50 blocks, 0-49).'}),
                 'bias_sigma_min': ('FLOAT', {'default':0.0,'min':0.0,'max':1.0,'step':0.01,
-                    'tooltip':'Apply the temporal bias only at noise levels >= this; later steps run native attention (motion is laid down at high noise).'})}}
+                    'tooltip':'Apply the temporal bias only at noise levels >= this; later steps run native attention (motion is laid down at high noise).'}),
+                'reference_token_drop': ('FLOAT', {'default':0.0,'min':0.0,'max':0.95,'step':0.05,
+                    'tooltip':'Experimental (idea from CodecOPSD, arXiv 2611.31184): leave out this share of the motion video tokens that are most predictable from the previous frame (static background), so the DiT sequence is shorter. 0 = off. Needs reference_frames. With strength > 0 the exact bias runs in one pass: sage fused with per-row times (flash augmented as fallback); strength 0 keeps the selected backend.'}),
+                'reference_frames': ('IMAGE', {'tooltip':'The frames of the motion video, the same ones connected to Reference to Video as <Video N>. Only needed for reference_token_drop.'})}}
     RETURN_TYPES = ('MODEL',)
     FUNCTION = 'apply'
     CATEGORY = 'TARA-H3'
@@ -400,7 +469,8 @@ class TARAH3TemporalAlignment:
         'Does not encode video or load the LoRA. Defaults match training.')
 
     def apply(self, model, motion_video_index=1, strength=2.0, window_seconds=0.2, falloff_seconds=0.25, max_penalty=6.0, attention_backend=AUTO, unique_id=None,
-              structure_guidance=1.0, structure_sigma_min=0.0, strength_scale=STRENGTH_SCALES[0], bias_preset='full', bias_block_start=0, bias_block_end=99, bias_sigma_min=0.0):
+              structure_guidance=1.0, structure_sigma_min=0.0, strength_scale=STRENGTH_SCALES[0], bias_preset='full', bias_block_start=0, bias_block_end=99, bias_sigma_min=0.0,
+              reference_token_drop=0.0, reference_frames=None):
         if BIAS_PRESETS.get(bias_preset) is not None:
             bias_block_start, bias_block_end, bias_sigma_min = BIAS_PRESETS[bias_preset]
         def report(data):
@@ -414,7 +484,8 @@ class TARAH3TemporalAlignment:
                                      telemetry=report if unique_id is not None else None,
                                      structure_guidance=structure_guidance, structure_sigma_min=structure_sigma_min,
                                      bias_block_start=bias_block_start, bias_block_end=bias_block_end, bias_sigma_min=bias_sigma_min,
-                                     strength_scale=strength_scale),)
+                                     strength_scale=strength_scale, token_drop_share=reference_token_drop,
+                                     reference_frames=reference_frames),)
 
 NODE_CLASS_MAPPINGS = {'TARAH3TemporalAlignment': TARAH3TemporalAlignment}
 NODE_DISPLAY_NAME_MAPPINGS = {'TARAH3TemporalAlignment': 'TARA-H3 Temporal Alignment'}

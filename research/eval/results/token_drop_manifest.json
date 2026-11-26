@@ -1,0 +1,91 @@
+{
+ "picture": "identity.png",
+ "prompt_file": "../prompt_replace_performer.txt",
+ "models": {
+  "turbo_lora": "henge/dmd_ref2va_8step.safetensors",
+  "tara_lora": "henge/minimax_h3_motion_transfer_tara_v1.0_ref2va.safetensors",
+  "audio_vae": "minimax/minimax_h3_audio_vae_fp32.safetensors"
+ },
+ "clips": [
+  {
+   "name": "cu_shots",
+   "video": "shots_28.mp4",
+   "category": "closeup",
+   "width": 416,
+   "height": 736,
+   "frames": 107,
+   "start": 0.0
+  },
+  {
+   "name": "w_dance",
+   "video": "taratype_dance.mp4",
+   "category": "wide",
+   "width": 416,
+   "height": 736,
+   "frames": 90,
+   "start": 2.0
+  },
+  {
+   "name": "w_couple",
+   "video": "taratype_couple.mp4",
+   "category": "wide_2p",
+   "width": 736,
+   "height": 416,
+   "frames": 90,
+   "start": 0.0
+  },
+  {
+   "name": "long_dance",
+   "video": "taratype_dance.mp4",
+   "category": "long_wide",
+   "width": 416,
+   "height": 736,
+   "frames": 243,
+   "start": 0.5
+  },
+  {
+   "name": "long_wide",
+   "video": "taratype_wide_long.mp4",
+   "category": "long_wide",
+   "width": 736,
+   "height": 416,
+   "frames": 243,
+   "start": 0.0
+  }
+ ],
+ "variants": {
+  "native": {
+   "native": true
+  },
+  "nobias": {
+   "strength": 0.0,
+   "strength_scale": "fixed"
+  },
+  "nobias_d50": {
+   "strength": 0.0,
+   "strength_scale": "fixed",
+   "reference_token_drop": 0.5
+  },
+  "nobias_d70": {
+   "strength": 0.0,
+   "strength_scale": "fixed",
+   "reference_token_drop": 0.7
+  },
+  "tara_t": {
+   "strength": 2.0
+  },
+  "tara_d50": {
+   "strength": 2.0,
+   "reference_token_drop": 0.5
+  },
+  "tara_d70": {
+   "strength": 2.0,
+   "reference_token_drop": 0.7
+  }
+ },
+ "seeds": [
+  42,
+  7,
+  11
+ ]
+}

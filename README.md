@@ -41,10 +41,21 @@ The bias is the same in every backend; only the kernel changes. The default pick
 | flash partitions | Exact log-sum-exp merge of FlashAttention partitions | PyTorch CUDA |
 | comfy kitchen | One-pass CUDA kernel from the comfy-kitchen fork (downloaded and SHA-256 verified on first use) | Linux sm80–sm120, Windows sm86/89/120 |
 | flex (original) | PyTorch FlexAttention score modifier | PyTorch |
+| flash augmented (one pass) | One FlashAttention pass with the bias carried in extra head dimensions (128 + latent frames); any number of tokens per frame | PyTorch CUDA |
 
 **Kitchen one-pass kernel availability.** Prebuilt binaries (built per commit by CI, SHA-256 pinned in `tara_h3/h3_temporal_binaries.json`) cover Linux sm80/86/89/90/100/120 and Windows sm86/89/120. On any other NVIDIA GPU (sm80 or newer) with a CUDA toolkit installed, TARA-H3 builds the kernel once for that GPU from source files pinned by SHA-256 at the same commit (`nvcc` from `CUDA_HOME`/`CUDA_PATH` or `PATH`; on Windows also `cl`, e.g. from an "x64 Native Tools" prompt) and caches it. Set `TARA_H3_TEMPORAL_LOCAL_BUILD=0` to skip local builds, `TARA_H3_TEMPORAL_AUTO_INSTALL=0` to skip the kernel entirely, `TARA_H3_TEMPORAL_CACHE_DIR` to move the cache. Without either, auto uses sage fused (Triton compiles it on first use).
 
 Fallback chain for auto: Kitchen one-pass → sage fused → sage partitions → flash partitions; each failure is logged once. With **Model Sparse Attention (sol-attn)** connected, TARA uses the sol one-pass kernel with the bias fused in (and the dense chain for steps/blocks that sol leaves dense). With `strength 0` only the clock alignment remains and the selected backend runs unchanged.
+
+## Reference token drop (experimental)
+
+`reference_token_drop` (0–0.95) leaves out that share of the motion video's tokens that are most predictable from the previous frame — mostly static background — so the DiT sequence is shorter. The idea comes from [CodecOPSD](https://arxiv.org/abs/2611.31184); TARA-H3 uses its own implementation (block matching on luma, no H.264 encode, no extra training). Latent frame 0 is always kept and the kept tokens keep their original positions, so TARA's clock alignment is unchanged. Connect the same frames that go into **MiniMax H3 Reference to Video** to `reference_frames`.
+
+With strength > 0 the bias runs in the sage fused kernel reading a time per token row (`flash augmented`, an exact one-pass FlashAttention fallback, is used if Triton/Sage are missing); with strength 0 the selected backend runs unchanged. Not yet combined with Reference Binding, Token Weights or sparse attention.
+
+![w_couple: reference, native H3, TARA with 0/50/70% token drop](docs/media/token_drop/w_couple_s2.jpg)
+
+5 clips × 3 seeds, full TARA, RTX 5090: seconds per step 3.81 → 2.95 → 2.56 (107 frames) and 12.1 → 9.1 → 7.5 (243 frames) for 0 / 50 / 70 % drop. Body-pose following is unchanged; fine face motion drops slightly (about −0.05 at 50 %, up to −0.1 at 70 %). Use 50 % as a safe setting, 70 % for wide/body shots, no drop or 50 % for talking close-ups. Comparison videos (seconds per step and total time under each panel): [cu_shots](docs/media/token_drop/cu_shots_s2.mp4) · [w_dance](docs/media/token_drop/w_dance_s2.mp4) · [w_couple](docs/media/token_drop/w_couple_s2.mp4) · [long_dance](docs/media/token_drop/long_dance_s2.mp4) · [long_wide](docs/media/token_drop/long_wide_s2.mp4); strength 0 and all tables in [`research/eval/results/token_drop_summary.md`](research/eval/results/token_drop_summary.md).
 
 ## Where the bias is applied
 

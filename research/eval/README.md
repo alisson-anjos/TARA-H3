@@ -12,7 +12,7 @@ python research/eval/metrics.py my_clips.json ComfyUI/input ComfyUI/output --out
 python research/eval/summarize.py metrics.csv > results.md
 ```
 
-Variants: `{"native": true}` renders MiniMax H3's native reference conditioning without the TARA node (the baseline for temporal alignment); `{"strength": 0.0}` keeps only TARA's clock alignment; `{"strength": 2.0}` is full TARA.
+Variants: `{"native": true}` renders MiniMax H3's native reference conditioning without the TARA node (the baseline for temporal alignment); `{"strength": 0.0}` keeps only TARA's clock alignment; `{"strength": 2.0}` is full TARA. Add `"reference_token_drop": 0.5` to any TARA variant to drop that share of the motion video's tokens (the harness connects the reference frames).
 
 TARA's purpose is temporal alignment, so the primary measures are motion-following ones: `pose_sync.py` (DWPose body keypoints of the main performer, for medium/wide/full-body shots) and the face-motion columns of `metrics.py` (head yaw/pitch/roll and mouth, for close-ups):
 
